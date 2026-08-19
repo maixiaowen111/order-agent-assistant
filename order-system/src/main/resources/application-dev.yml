@@ -1,0 +1,32 @@
+# ============================================
+# 开发环境配置
+# ============================================
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/order_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+  redis:
+    host: localhost
+    port: 6379
+    timeout: 3000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+
+# 只显示我们自己的日志，框架日志关掉
+logging:
+  level:
+    com.example.order: DEBUG       # 只显示项目代码的日志
+    com.baomidou.mybatisplus: WARN # MyBatis-Plus 静音
+    org.springframework: WARN      # Spring 静音
+    org.redisson: WARN             # Redisson 静音
+
+# 内部接口密钥：order-agent-assistant 调 /internal/** 时要带的 X-Internal-Key
+# 两边要保持一致（agent 的 application.yml 里 order-system.internal-key 填同样的值）
+internal-api:
+  key: order-agent-internal-key-2026

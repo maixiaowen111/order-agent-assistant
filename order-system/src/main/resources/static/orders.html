@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的订单 - OrderSystem</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f5f5f5; }
+        .navbar { background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+        .navbar-brand { font-weight: 700; color: #1677ff !important; }
+        .order-card { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 12px; cursor: pointer; transition: box-shadow .2s; }
+        .order-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+        .price { color: #ff4d4f; font-weight: 600; }
+        .status-badge { font-size: 12px; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand">
+    <div class="container">
+        <a class="navbar-brand" href="/index.html">📦 OrderSystem</a>
+        <a href="/cart.html" class="btn btn-outline-secondary btn-sm">购物车</a>
+    </div>
+</nav>
+
+<div class="container mt-4" style="max-width: 700px;">
+    <h5 class="mb-3 fw-bold">📋 我的订单</h5>
+    <div id="orderList"><div class="text-center py-5 text-muted">加载中...</div></div>
+</div>
+
+<!-- 订单详情弹窗 -->
+<div class="modal fade" id="detailModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header"><h6 class="modal-title">订单详情</h6><button class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body" id="detailContent"></div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/js/auth.js?v=2"></script>
+<script src="/js/api.js?v=2"></script>
+<script>
+
+if (!Auth.isLogin()) { window.location.href = '/login.html'; }
+
+loadOrders();
+
+const STATUS_MAP = {
+    'WAIT_PAY':  { label: '待支付', color: 'warning' },
+    'PAID':      { label: '已支付', color: 'info' },
+    'CANCELLED': { label: '已取消', color: 'secondary' }
+};
+
+async function loadOrders() {
+    try {
+        const orders = await API.get('/api/order');
+        renderOrders(orders);
+    } catch(e) {
+        document.getElementById('orderList').innerHTML =
+            '<div class="text-center py-5 text-danger">加载失败：' + e.message + '</div>';
+    }
+}
+
+function renderOrders(orders) {
+    const container = document.getElementById('orderList');
+    if (!orders || orders.length === 0) {
+        container.innerHTML = '<div class="text-center py-5 text-muted">暂无订单，<a href="/index.html">去逛逛</a></div>';
+        return;
+    }
+    container.innerHTML = orders.map(o => {
+        const s = STATUS_MAP[o.status] || { label: o.status, color: 'secondary' };
+        const time = o.createTime ? new Date(o.createTime).toLocaleString('zh-CN') : '—';
+        return `
+            <div class="order-card" onclick="showDetail(${o.id})">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <small class="text-muted">${o.orderNo}</small>
+                        <div class="mt-1">${o.items.map(i => escHtml(i.productName)).join('、')}</div>
+                    </div>
+                    <span class="badge bg-${s.color} status-badge">${s.label}</span>
+                </div>
+                <div class="d-flex justify-content-between mt-2">
+                    <span class="price">¥${o.totalAmount.toFixed(2)}</span>
+                    <span class="text-muted small">${time}</span>
+                </div>
+                <div class="mt-2 d-flex gap-2" onclick="event.stopPropagation()">
+                    ${o.status === 'WAIT_PAY'
+                        ? `<button class="btn btn-success btn-sm" onclick="payOrder(${o.id})">去支付</button>
+                           <button class="btn btn-outline-danger btn-sm" onclick="cancelOrder(${o.id})">取消</button>`
+                        : ''}
+                </div>
+            </div>`;
+    }).join('');
+}
+
+async function showDetail(orderId) {
+    try {
+        const order = await API.get('/api/order/' + orderId);
+        const s = STATUS_MAP[order.status] || { label: order.status };
+        const time = order.createTime ? new Date(order.createTime).toLocaleString('zh-CN') : '—';
+        document.getElementById('detailContent').innerHTML = `
+            <p><strong>订单号：</strong>${order.orderNo}</p>
+            <p><strong>状态：</strong><span class="badge bg-${STATUS_MAP[order.status]?.color || 'secondary'}">${s.label}</span></p>
+            <p><strong>收货人：</strong>${order.receiverName} / ${order.receiverPhone}</p>
+            <p><strong>地址：</strong>${order.receiverAddress}</p>
+            <p><strong>下单时间：</strong>${time}</p>
+            <hr>
+            <h6>商品明细</h6>
+            ${order.items.map(i => `
+                <div class="d-flex justify-content-between mb-1">
+                    <span>${escHtml(i.productName)} × ${i.quantity}</span>
+                    <span class="price">¥${i.totalPrice.toFixed(2)}</span>
+                </div>
+            `).join('')}
+            <hr>
+            <div class="d-flex justify-content-between"><strong>合计</strong><strong class="price">¥${order.totalAmount.toFixed(2)}</strong></div>
+        `;
+        new bootstrap.Modal(document.getElementById('detailModal')).show();
+    } catch(e) { alert(e.message); }
+}
+
+async function payOrder(orderId) {
+    if (!confirm('确认支付？')) return;
+    try {
+        await API.put('/api/order/' + orderId + '/pay');
+        alert('支付成功');
+        loadOrders();
+    } catch(e) { alert(e.message); }
+}
+
+async function cancelOrder(orderId) {
+    if (!confirm('确认取消？')) return;
+    try {
+        await API.put('/api/order/' + orderId + '/cancel');
+        alert('已取消');
+        loadOrders();
+    } catch(e) { alert(e.message); }
+}
+
+function escHtml(text) { return (text || '').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+</script>
+</body>
+</html>

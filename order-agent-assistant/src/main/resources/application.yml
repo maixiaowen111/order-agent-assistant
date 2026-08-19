@@ -1,0 +1,20 @@
+server:
+  port: 8081  # 避开你 order-system 占用的 8080
+
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+deepseek:
+  # key 不写死，运行时从环境变量 DEEPSEEK_API_KEY 读（配置外部化）
+  api-key: ${DEEPSEEK_API_KEY}
+  base-url: https://api.deepseek.com/chat/completions
+  model: deepseek-chat
+
+# 订单系统内部接口：agent 不直连数据库，所有数据读写走这里
+order-system:
+  base-url: http://localhost:8080
+  # 和 order-system 的 internal-api.key 保持一致，两边配对才放行
+  internal-key: order-agent-internal-key-2026

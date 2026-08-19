@@ -1,0 +1,97 @@
+# 一键起整套：MySQL + Redis + order-system + agent
+# 用法：
+#   1. 复制 .env.example 为 .env，填 DEEPSEEK_API_KEY
+#   2. docker compose up -d --build
+#   3. 打开 http://localhost:8081/query?q=...  或 http://localhost:8080/...
+#
+# 设计取舍：
+#   - mysql/redis 不发布宿主机端口，只在 compose 内网用服务名互连
+#     ——避免和本机已有的 MySQL(3306)/Redis(6379) 冲突
+#   - agent 的 key 走环境变量，由宿主机 .env 注入，不写死在任何文件里
+name: order-agent
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: order-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_DATABASE: "order_db"
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 首次启动自动执行基线 SQL：建表 + 唯一索引 + t_notification
+      - ../sql/order_db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p123456"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  redis:
+    image: redis:7
+    container_name: order-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  order-system:
+    build: ../order-system
+    container_name: order-system
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      # 连接地址从 localhost 换成 compose 服务名（覆盖 application-dev.yml）
+      SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/order_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: "123456"
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      # Redisson 锁用的地址也要指向 compose 服务名（spring.data.redis 只覆盖 Spring Data Redis）
+      REDISSON_ADDRESS: redis://redis:6379
+    ports:
+      - "8080:8080"
+
+  agent:
+    build: .
+    container_name: order-agent
+    depends_on:
+      redis:
+        condition: service_healthy
+      order-system:
+        condition: service_started
+    environment:
+      # 从 .env / 环境变量读，没配就报错提示
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?请先在 .env 里配置 DEEPSEEK_API_KEY（见 .env.example）}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      ORDER_SYSTEM_BASE_URL: http://order-system:8080
+      # 和 order-system 的 internal-api.key 保持一致
+      ORDER_SYSTEM_INTERNAL_KEY: order-agent-internal-key-2026
+    ports:
+      - "8081:8081"
+
+  # 前端：nginx 托管 Vue 构建产物 + 反代 /api→order-system、/query+/approve→agent
+  # 浏览器只访问 8082 一个源，两个后端零 CORS 改动
+  frontend:
+    build: ./frontend
+    container_name: order-frontend
+    depends_on:
+      - order-system
+      - agent
+    ports:
+      - "8082:8082"
+
+volumes:
+  mysql-data:
+  redis-data:

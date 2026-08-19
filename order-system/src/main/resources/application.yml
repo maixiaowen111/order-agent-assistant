@@ -1,0 +1,40 @@
+# ============================================
+# SpringBoot 主配置文件
+# 作用：通用配置 + 指定激活的环境
+# ============================================
+
+# 激活开发环境配置
+spring:
+  profiles:
+    active: dev
+
+  # 应用名称（微服务阶段会用到，先配好）
+  application:
+    name: order-system
+
+# 服务器端口
+server:
+  port: 8080
+
+# MyBatis-Plus 通用配置
+mybatis-plus:
+  # 实体类扫描包路径
+  type-aliases-package: com.example.order.entity
+  # 下划线转驼峰（数据库字段 user_name → Java属性 userName）
+  configuration:
+    map-underscore-to-camel-case: true
+    # SQL 日志在 application-dev.yml 单独控制
+  # 全局配置
+  global-config:
+    db-config:
+      # 主键自增策略
+      id-type: auto
+      # 逻辑删除字段名（后面会用到）
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# 日志级别
+logging:
+  level:
+    com.example.order: debug

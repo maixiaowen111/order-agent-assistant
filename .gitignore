@@ -1,0 +1,36 @@
+# 本仓库是一个完整部署单元（monorepo）：order-agent-assistant + order-system + sql
+# docker-compose 用 ../order-system ../sql 联动，三者必须同仓库才能 clone 一键起。
+
+# 排除 D:\java\project 下与本项目无关、且各自已是独立 git 仓库的目录
+# （learn-claude-code、order-system-cloud 有各自的 .git，父仓库不跟踪它们）
+/learn-claude-code/
+/order-system-cloud/
+
+# 环境/密钥：DEEPSEEK_API_KEY 放 .env，绝不提交 git
+.env
+
+# Java / Maven
+target/
+out/
+*.jar
+*.war
+
+# Node / 前端
+node_modules/
+dist/
+npm-debug.log*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# Log
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
