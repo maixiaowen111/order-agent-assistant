@@ -53,6 +53,20 @@ docker compose up -d --build
 > MySQL/Redis 容器不占用宿主机端口，避免和你本机已有的 3306/6379 冲突。
 > 管理员账号 `admin / admin123`（启动自动初始化，幂等），登录后导航多一个「商品管理」。
 
+## 踩坑记录（面试官最爱问）
+
+这个项目踩过 7 个**真实踩过、真的修好了**的坑，每个都有完整的「现象 → 根因 → 修复 → 面试怎么讲」，见 [PITFALLS.md](order-agent-assistant/PITFALLS.md)：
+
+| # | 坑 | 一句话根因 |
+|---|----|-----------|
+| 1 | 编辑商品报「无权限」，其他操作正常 | Spring `*` 通配符不区分 HTTP 方法，误放行了管理员的 PUT |
+| 2 | 部署新版用户看不到新功能 | 浏览器缓存住旧 index.html，SPA 入口没配 `no-cache` |
+| 3 | 聊天返回 200 却「没有收到回复」 | agent 的 axios 实例漏配解包拦截器 |
+| 4 | 说「取消订单」模型却调了查单 | LLM 工具选择有随机性，提示词压不住，需双保险 |
+| 5 | order-system 容器启动即崩 | Redis 地址硬编码 `localhost`，容器里 localhost=自己 |
+| 6 | curl 传中文参数落库乱码 | Windows Git Bash 按 GBK 传参（测试侧，非程序 bug） |
+| 7 | 消息对象存 Redis 再读类型不对 | Jackson 多态序列化需中间格式摊平 |
+
 ## 文档导航
 
 | 文档 | 内容 |
