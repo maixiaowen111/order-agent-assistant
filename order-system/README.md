@@ -66,6 +66,21 @@ src/main/java/com/example/order/
 - **缓存三防**：空值防穿透、随机TTL防雪崩、分布式锁防击穿
 - **状态机重试**：WAIT→PROCESSING→SUCCESS/FAIL，PROCESSING 防并发重复处理
 
+## 踩坑记录（面试官最爱问）
+
+一个从零学的后端项目，踩坑特别多——**18 个全量记录**在 [project-learning-record.md](project-learning-record.md)「四、我真实踩过的坑」，这里挑面试价值最高的几个：
+
+| 坑 | 一句话根因 |
+|----|-----------|
+| 接口一直 404，`mvn compile` 后直接去测 | 编译只生成 .class，服务根本没启动——`mvn spring-boot:run` 才算运行 |
+| DTO 写了 @NotBlank 但校验没生效 | Controller 参数上漏了 @Validated，注解变成摆设 |
+| 下划线字段查出来全是 null | 没配 `map-underscore-to-camel-case`，`user_name` 对不上 `userName` |
+| 金额用 double 算错 | `0.1 + 0.2 ≠ 0.3`，金额必须 `BigDecimal` + `DECIMAL(10,2)` |
+| 业务异常该返 400 还是 500 分不清 | 4xx = 客户端问题（换输入就行），5xx = 服务端问题（代码 bug） |
+| 逻辑删除的 `WHERE id = 1` 从哪来 | 不是写死的，是 `deleteById(5)` 传参；机制是 delete 变 update |
+
+> 每个坑都有「问题 → 答案 → 口诀」的完整版，见 [project-learning-record.md](project-learning-record.md)。
+
 ## 详细学习记录
 
 见 [project-learning-record.md](project-learning-record.md)
