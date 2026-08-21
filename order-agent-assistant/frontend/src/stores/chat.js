@@ -12,8 +12,8 @@ let msgSeed = 0
  * 都回传同一值 —— 多轮记忆和批准状态都按它绑定。
  *
  * 批准流：answer 含「人工确认/写操作被拦截」→ 消息挂 pendingApproval → 渲染批准按钮
- * → 点击：POST /approve 放行，再用 orderNo（结构化→answer→用户原话 三级兜底）补一句
- * 「我已批准，请继续执行取消订单 <orderNo>」重发 /query，agent 真正执行 → 订单刷新。
+ * → 点击：POST /approve 放行，再补一句「我已批准，请继续执行你刚才要执行的写操作」重发
+ * /query，agent 真正执行（取消 / 改地址都走这里）→ 若是取消成功则订单列表刷新。
  */
 export const useChatStore = defineStore('chat', {
   state: () => ({
@@ -102,18 +102,9 @@ export const useChatStore = defineStore('chat', {
         msg.approved = true
         msg.approving = false
 
-        const orderNo =
-          msg.orderNo ||
-          extractOrderNo(msg.content) ||
-          extractOrderNo(this.lastUserText())
-        if (!orderNo) {
-          this.push({ role: 'agent', content: '没有识别到订单号，请把订单号发给我，我再帮你取消。' })
-          this.busy = false
-          this.persist()
-          return
-        }
-
-        const followUp = `我已批准，请继续执行取消订单 ${orderNo}`
+        // follow-up 不点名工具：可能是取消、也可能是改地址。模型知道自己刚才在做什么，
+        // 泛化指令「继续执行你刚才要执行的写操作」让它调用对应的工具，避免把改地址误拉成取消。
+        const followUp = '我已批准，请继续执行你刚才要执行的写操作'
         this.push({ role: 'user', content: followUp })
         const loadingId = this.push({ role: 'agent', loading: true })
         const res = await agentApi.agentQuery(followUp, this.sessionId)
@@ -121,7 +112,7 @@ export const useChatStore = defineStore('chat', {
         this.update(loadingId, {
           loading: false,
           content: answer,
-          orderNo: res.orderNo || orderNo,
+          orderNo: res.orderNo || msg.orderNo || '',
           status: res.status || '',
           amount: res.amount || '',
         })

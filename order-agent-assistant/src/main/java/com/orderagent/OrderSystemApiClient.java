@@ -12,6 +12,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 订单系统的内部 API 客户端。
@@ -80,6 +82,18 @@ public class OrderSystemApiClient {
         }
     }
 
+    /** 修改收货地址，返回给模型看的描述串 */
+    public String updateOrderAddress(String orderNo, String address) {
+        try {
+            JsonNode data = call("POST", "/internal/order/updateAddress",
+                    Map.of("orderNo", orderNo, "address", address));
+            return "已更新订单 " + text(data, "orderNo")
+                    + " 的收货地址为：" + text(data, "receiverAddress");
+        } catch (Exception e) {
+            return "修改收货地址失败：" + e.getMessage();
+        }
+    }
+
     /** 按商品名模糊搜索，返回匹配商品的 id/名称/库存，让模型先按名找到 id */
     public String queryProductSearch(String keyword) {
         try {
@@ -107,8 +121,15 @@ public class OrderSystemApiClient {
      * 注意：业务异常时 HTTP 状态码仍是 200，必须看 body 里的 code 字段。
      */
     private JsonNode call(String method, String path, String paramName, String paramValue) throws Exception {
-        String url = baseUrl + path + "?" + paramName + "="
-                + URLEncoder.encode(paramValue, StandardCharsets.UTF_8);
+        return call(method, path, Map.of(paramName, paramValue));
+    }
+
+    private JsonNode call(String method, String path, Map<String, String> params) throws Exception {
+        String query = params.entrySet().stream()
+                .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8)
+                        + "=" + URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
+                .collect(Collectors.joining("&"));
+        String url = baseUrl + path + "?" + query;
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(10))
                 .header("X-Internal-Key", internalKey)

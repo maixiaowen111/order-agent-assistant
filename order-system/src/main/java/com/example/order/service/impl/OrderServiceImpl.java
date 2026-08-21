@@ -261,6 +261,29 @@ import java.util.stream.Collectors;
           );
       }
 
+      @Override
+      @Transactional(rollbackFor = Exception.class)
+      public OrderVO updateAddress(String orderNo, String newAddress) {
+          if (newAddress == null || newAddress.isBlank()) {
+              throw new BusinessException(400, "收货地址不能为空");
+          }
+          if (newAddress.length() > 500) {
+              throw new BusinessException(400, "收货地址过长（最多 500 字）");
+          }
+          Order order = getOrderByNo(orderNo);
+          String status = order.getStatus();
+          if ("CANCELLED".equals(status)) {
+              throw new BusinessException(400, "订单已取消，不能修改收货地址");
+          }
+          if (!"WAIT_PAY".equals(status) && !"PAID".equals(status)) {
+              throw new BusinessException(400, "当前状态（" + status + "）不允许修改收货地址");
+          }
+          order.setReceiverAddress(newAddress.trim());
+          orderMapper.updateById(order);
+          log.info("收货地址已更新，orderNo={}", orderNo);
+          return detail(order.getId());
+      }
+
       private Order getOrderByNo(String orderNo) {
           LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<>();
           wrapper.eq(Order::getOrderNo, orderNo);

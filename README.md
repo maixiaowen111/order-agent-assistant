@@ -1,6 +1,6 @@
 # Order Agent Assistant
 
-一个 **AI Agent 管理订单** 的可运行作品：用自然语言让 AI 帮你查单、查商品库存、取消订单；取消已支付的订单会自动触发退款，并在通知中心生成一条真实的退款通知。前端、决策层、执行层三层齐全，Docker 一键起，clone 下来就能跑。
+一个 **AI Agent 管理订单** 的可运行作品：用自然语言让 AI 帮你查单、查商品库存、改收货地址、取消订单；取消已支付的订单会自动触发退款，并在通知中心生成一条真实的退款通知。前端、决策层、执行层三层齐全，Docker 一键起，clone 下来就能跑。
 
 - 🤖 **AI 决策层** `order-agent-assistant`：Agent 循环 + 权限闸门（写操作要人工批准）+ Redis 多轮记忆 + DeepSeek 工具调用。模型是唯一决策点，代码只负责执行和搬运。
 - ⚙️ **业务执行层** `order-system`：订单状态机 + Transactional Outbox（取消+退款同事务落库）+ 通知中心 + 管理员商品管理（含**商品图片上传**：扩展名/魔数校验 + UUID 文件名 + 静态映射）。业务规则只留一份，agent 不直连数据库。
@@ -55,7 +55,7 @@ docker compose up -d --build
 
 ## 踩坑记录（面试官最爱问）
 
-这个项目踩过 9 个**真实踩过、真的修好了**的坑，每个都有完整的「现象 → 根因 → 修复 → 面试怎么讲」，见 [PITFALLS.md](order-agent-assistant/PITFALLS.md)：
+这个项目踩过 10 个**真实踩过、真的修好了**的坑，每个都有完整的「现象 → 根因 → 修复 → 面试怎么讲」，见 [PITFALLS.md](order-agent-assistant/PITFALLS.md)：
 
 | # | 坑 | 一句话根因 |
 |---|----|-----------|
@@ -68,20 +68,21 @@ docker compose up -d --build
 | 7 | 消息对象存 Redis 再读类型不对 | Jackson 多态序列化需中间格式摊平 |
 | 8 | 全新部署商品接口报 Unknown column | compose 只挂基线 SQL，增量 migration 不自动执行，基线需同步最新结构 |
 | 9 | `@RequestParam Long` 收到非数字返回 500 | 类型转换失败（MethodArgumentTypeMismatchException）没被全局异常处理，掉进 500 兜底 | 客户端输错是 4xx 问题，全局异常处理器要单接类型转换异常 |
+| 10 | 批准第二个写操作，模型却去取消订单 | 批准链路（闸门 reason/markApproved/前端 follow-up）把「取消订单」写死在文案里 | 通用机制别点名具体工具：批准消息泛化成「继续执行你刚才要执行的写操作」 |
 
 ## 文档导航
 
 | 文档 | 内容 |
 |------|------|
 | [order-agent-assistant/README.md](order-agent-assistant/README.md) | agent 架构详解、设计决策（面试常问）、完整链路演示话术 |
-| [PITFALLS.md](order-agent-assistant/PITFALLS.md) | 踩坑记录：现象 → 根因 → 修复 → 面试怎么讲（9 个真实坑） |
+| [PITFALLS.md](order-agent-assistant/PITFALLS.md) | 踩坑记录：现象 → 根因 → 修复 → 面试怎么讲（10 个真实坑） |
 | [sql/](sql/) | 建库基线 `order_db.sql` + 增量迁移脚本 |
 
 ## 测试
 
 ```bash
 cd order-system && mvn test          # 14 个用例：状态机/通知中心/管理员引导
-cd order-agent-assistant && mvn test  # 22 个用例：AgentLoop/闸门/会话存储/工具
+cd order-agent-assistant && mvn test  # 26 个用例：AgentLoop/闸门/会话存储/工具
 ```
 
 纯 Mockito 单元测试，不依赖中间件，任何机器都能跑绿。

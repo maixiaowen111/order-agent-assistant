@@ -50,10 +50,12 @@ public class AgentLoop {
 
     /** 人工批准后，把"已批准"这件事喂回给模型，让它的认知跟上闸门状态。
      *  用 user 角色 + 直接命令：模型之前拒绝过"需要人工确认"，这种拒绝是"粘性"的，
-     *  被动的 system"你可以执行"压不住它，得让"人"亲自下指令它才会照做。 */
+     *  被动的 system"你可以执行"压不住它，得让"人"亲自下指令它才会照做。
+     *  消息不点名具体工具：可能是取消、也可能是改地址，模型知道自己刚才在做什么，
+     *  让它"调用对应的工具"即可覆盖所有写操作。 */
     public void markApproved(String sessionId) {
         List<Message> messages = store.getOrCreate(sessionId);
-        messages.add(Message.user("【人工已确认】我已批准取消操作，请立即调用 cancel_order 工具执行，不要再提示需要确认。"));
+        messages.add(Message.user("【人工已确认】我已批准你刚才要执行的写操作，请立即调用对应的工具完成它，不要再提示需要人工确认。"));
         store.save(sessionId, messages);
     }
 

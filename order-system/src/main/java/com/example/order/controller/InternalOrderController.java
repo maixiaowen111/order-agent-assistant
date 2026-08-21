@@ -46,6 +46,14 @@ public class InternalOrderController {
         return Result.success(orderService.cancelByOrderNo(orderNo));
     }
 
+    @PostMapping("/updateAddress")
+    public Result<OrderVO> updateAddress(@RequestParam("orderNo") String orderNo,
+                                         @RequestParam("address") String address,
+                                         @RequestHeader(value = "X-Internal-Key", required = false) String key) {
+        checkKey(key);
+        return Result.success(orderService.updateAddress(orderNo, address));
+    }
+
     private void checkKey(String key) {
         if (key == null || !internalKey.equals(key)) {
             throw new BusinessException(401, "内部接口密钥错误");

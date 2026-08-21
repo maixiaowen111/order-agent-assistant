@@ -37,7 +37,10 @@ public class WritePermissionGate implements PermissionGate {
 
     @Override
     public String reason(ToolCall call) {
-        return "写操作被拦截：取消订单 " + call.args().get("orderNo") + " 需要人工确认后才能执行。";
+        Object orderNo = call.args().get("orderNo");
+        return (orderNo != null && !String.valueOf(orderNo).isBlank())
+                ? "写操作被拦截：需要人工确认后才能执行（订单 " + orderNo + "）。"
+                : "写操作被拦截：该操作会修改数据，需要人工确认后才能执行。";
     }
 
     /** 人工批准：允许这个会话执行写操作。 */

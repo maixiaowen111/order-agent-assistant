@@ -56,6 +56,6 @@ public class AgentController {
     public Map<String, String> approve(@RequestParam("sessionId") String sessionId) {
         gate.approve(sessionId);      // 打开闸门（状态）
         loop.markApproved(sessionId); // 告诉模型（认知）
-        return Map.of("result", "已批准该会话的写操作，现在重新让 agent 执行取消即可");
+        return Map.of("result", "已批准该会话的写操作，现在重新让 agent 执行即可");
     }
 }

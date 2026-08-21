@@ -42,4 +42,10 @@ package com.example.order.service;
        * 按订单号取消（内部接口用），返回取消结果（是否触发退款）
        */
       Map<String, Object> cancelByOrderNo(String orderNo);
+
+      /**
+       * 修改收货地址（内部接口用）。业务边界：已取消订单不可改。
+       * 改地址不触发退款/库存变化，无需写 Outbox 事件。
+       */
+      OrderVO updateAddress(String orderNo, String newAddress);
   }
