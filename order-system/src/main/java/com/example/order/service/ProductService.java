@@ -4,6 +4,8 @@ package com.example.order.service;
   import com.example.order.dto.ProductDTO;
   import com.example.order.vo.ProductVO;
 
+  import java.util.List;
+
   public interface ProductService {
 
       /**
@@ -18,6 +20,12 @@ package com.example.order.service;
        * 商品详情
        */
       ProductVO detail(Long id);
+
+      /**
+       * 按名称关键字搜索商品（模糊匹配；含下架；未删除）。
+       * 给 agent 内部接口用：模型先按商品名搜出 id，再查库存。
+       */
+      List<ProductVO> search(String keyword, int limit);
 
       /**
        * 新增商品

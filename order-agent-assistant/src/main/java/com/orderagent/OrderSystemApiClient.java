@@ -46,6 +46,7 @@ public class OrderSystemApiClient {
                     + "，状态：" + text(data, "status")
                     + "，收货人：" + text(data, "receiverName")
                     + "，收货电话：" + text(data, "receiverPhone")
+                    + "，收货地址：" + text(data, "receiverAddress")
                     + "，下单时间：" + text(data, "createTime");
         } catch (Exception e) {
             return "查询订单失败：" + e.getMessage();
@@ -63,6 +64,41 @@ public class OrderSystemApiClient {
                     : "已取消订单 " + no + "（待支付订单，无需退款）";
         } catch (Exception e) {
             return "取消失败：" + e.getMessage();
+        }
+    }
+
+    /** 按商品 id 查库存，返回给模型看的描述串 */
+    public String queryProductStock(long productId) {
+        try {
+            JsonNode data = call("GET", "/internal/product/stock", "productId", String.valueOf(productId));
+            return "商品：" + text(data, "name")
+                    + "，单价：" + text(data, "price")
+                    + "，库存：" + text(data, "stock")
+                    + "，" + ("1".equals(text(data, "status")) ? "在售" : "已下架");
+        } catch (Exception e) {
+            return "查询库存失败：" + e.getMessage();
+        }
+    }
+
+    /** 按商品名模糊搜索，返回匹配商品的 id/名称/库存，让模型先按名找到 id */
+    public String queryProductSearch(String keyword) {
+        try {
+            JsonNode data = call("GET", "/internal/product/search", "name", keyword);
+            if (!data.isArray() || data.size() == 0) {
+                return "没有找到名称含「" + keyword + "」的商品";
+            }
+            StringBuilder sb = new StringBuilder();
+            for (JsonNode p : data) {
+                sb.append("id=").append(text(p, "productId"))
+                  .append(" 名称=").append(text(p, "name"))
+                  .append(" 单价=").append(text(p, "price"))
+                  .append(" 库存=").append(text(p, "stock"))
+                  .append(" ").append("1".equals(text(p, "status")) ? "在售" : "已下架")
+                  .append("\n");
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return "搜索商品失败：" + e.getMessage();
         }
     }
 

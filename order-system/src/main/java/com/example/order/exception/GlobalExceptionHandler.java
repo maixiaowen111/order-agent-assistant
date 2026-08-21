@@ -49,6 +49,17 @@
       }
 
       /**
+       * 处理参数类型不匹配
+       * 场景：@RequestParam Long 收到 "abc"、枚举收到非法值等 Spring 转换失败。
+       * 属于客户端问题，应返回 400 而不是 500。
+       */
+      @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+      public Result<?> handleTypeMismatch(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException e) {
+          log.warn("参数类型错误：name={}, value={}", e.getName(), e.getValue());
+          return Result.fail(400, "参数格式错误：" + e.getName());
+      }
+
+      /**
        * 处理其他未捕获异常（兜底）
        * 场景：NullPointerException、SQLException 等意料之外的错误
        */

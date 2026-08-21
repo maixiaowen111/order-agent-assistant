@@ -82,6 +82,19 @@
           voPage.setRecords(voList);
           return voPage;
       }
+      @Override
+      public List<ProductVO> search(String keyword, int limit) {
+          LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
+          wrapper.eq(Product::getDeleted, 0)
+                 .like(StringUtils.hasText(keyword), Product::getName, keyword)
+                 .orderByAsc(Product::getId)
+                 .last("limit " + Math.min(limit, 20));
+          log.debug("商品搜索，keyword={}, 最多{}条", keyword, Math.min(limit, 20));
+          return productMapper.selectList(wrapper).stream()
+                  .map(this::toProductVO)
+                  .collect(Collectors.toList());
+      }
+
      @Override
      public ProductVO detail(Long id) {
          String cacheKey = PRODUCT_CACHE_PREFIX + id;

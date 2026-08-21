@@ -25,7 +25,7 @@ public class QueryOrderTool implements Tool {
 
     @Override
     public String description() {
-        return "按订单号(order_no)查订单的金额、状态、收货人。订单号形如 2026073113563149f68e";
+        return "按订单号(order_no)查订单的金额、状态、收货人、收货电话、收货地址。订单号形如 2026073113563149f68e";
     }
 
     @Override

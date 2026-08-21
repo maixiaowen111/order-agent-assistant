@@ -16,6 +16,7 @@
 | 6 | Windows 下 curl 中文参数乱码 | Git Bash 按系统 GBK 编码传参 | 中文存 UTF-8 文件读进变量；这是测试侧坑，不是程序 bug |
 | 7 | 消息对象存 Redis 再读出来类型不对 | Jackson 多态序列化：content 是 Object | 用中间格式摊平（PersistedMessage），别依赖 Jackson 原生多态 |
 | 8 | 全新部署商品接口报 `Unknown column` | compose 只挂基线 SQL，增量 migration 不自动执行 | 基线必须同步最新结构，别让基线和 migration 漂移 |
+| 9 | `@RequestParam Long` 收到非数字返回 500 | Spring 参数类型转换失败（MethodArgumentTypeMismatchException）没被全局异常处理 | 客户端输错是 4xx 问题，给全局异常处理器补类型转换的专门处理 |
 
 ---
 
@@ -157,6 +158,24 @@ curl -G localhost:8081/query --data-urlencode "q=$Q" --data-urlencode "sessionId
 - **基线 `order_db.sql` 同步更新**，管**全新安装**——因为 compose 首次启动只执行基线，基线必须含最新结构。新增列后，基线的 `INSERT INTO ... VALUES (...)` 按列位置插值的种子数据也要同步补值（这次 3 条商品就在 `category` 后补了 `NULL`）。
 
 **面试怎么讲**：这个坑体现「数据库结构演进方式」的系统意识。核心一句：**容器 init 脚本只在首次启动执行，之后的结构变更一律走 migrations，所以任何 schema 变更都要同时想清两条路径——已有库怎么升级（migration）、全新库怎么建（基线），并保证两者不漂移**。大部分面试者只讲「要用 migration 管理 DDL」，你能补上「基线也要同步、否则全新部署直接炸」就是差异化。顺手可以引出「migration 工具（Flyway/Liquibase）解决的就是这个自动化问题」。
+
+---
+
+## 9. 参数类型不匹配：客户端输错返回 500 而不是 400
+
+**现象**：新增内部接口 `GET /internal/product/stock?productId=`（参数类型 `Long`），curl 传 `productId=abc`（非数字），返回 `500 服务器内部错误`，而不是「参数格式不对」的 400。
+
+**根因**：Spring 在把请求参数 `"abc"` 转成 `Long` 时抛出 `MethodArgumentTypeMismatchException`，但它不是 `BusinessException`、也不是 `MethodArgumentNotValidException`（那是 `@Valid` 注解校验的异常），全局异常处理器没接住 → 掉进最底层的 `Exception` 兜底 → 500。**「类型转换失败」和「校验不通过」是两回事，Spring 抛的是不同的异常**。
+
+**修复**：全局异常处理器加一个专门分支，返回 400：
+```java
+@ExceptionHandler(MethodArgumentTypeMismatchException.class)
+public Result<?> handleTypeMismatch(...) {
+    return Result.fail(400, "参数格式错误：" + e.getName());
+}
+```
+
+**面试怎么讲**：把「4xx = 客户端问题、5xx = 服务端 bug」这个原则落到具体异常上。业务系统最常见的三种「非 200 却 200」之外的错误，其实要分三类接：业务异常（`BusinessException`）、参数校验（`MethodArgumentNotValidException`）、参数类型转换（`MethodArgumentTypeMismatchException`）。面试官问「你的全局异常怎么设计的」时，能主动补出第三类说明你想过真实边界——**模型传参、外部调用方传参都不可信，服务端要兜住格式错误**。
 
 ---
 
