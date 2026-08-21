@@ -59,8 +59,12 @@ services:
       SPRING_DATA_REDIS_PORT: "6379"
       # Redisson 锁用的地址也要指向 compose 服务名（spring.data.redis 只覆盖 Spring Data Redis）
       REDISSON_ADDRESS: redis://redis:6379
+      # 商品图片存储目录：命名卷挂到 /app/uploads，容器重建不丢图
+      APP_UPLOAD_DIR: /app/uploads
     ports:
       - "8080:8080"
+    volumes:
+      - product-images:/app/uploads
 
   agent:
     build: .
@@ -95,3 +99,4 @@ services:
 volumes:
   mysql-data:
   redis-data:
+  product-images:

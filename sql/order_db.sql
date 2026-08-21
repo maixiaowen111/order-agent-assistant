@@ -211,6 +211,7 @@ CREATE TABLE `t_product`  (
   `price` decimal(10, 2) NOT NULL COMMENT '价格',
   `stock` int NOT NULL DEFAULT 0 COMMENT '库存数量',
   `category` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '分类',
+  `image` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '商品图片（相对路径）',
   `status` tinyint NOT NULL DEFAULT 1 COMMENT '状态：1-上架 0-下架',
   `deleted` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -221,9 +222,9 @@ CREATE TABLE `t_product`  (
 -- ----------------------------
 -- Records of t_product
 -- ----------------------------
-INSERT INTO `t_product` VALUES (1, 'iPhone 15 Ultra', '描述内容', 8999.00, 90, '手机', 1, 0, '2026-07-30 21:09:25', '2026-08-09 15:40:20');
-INSERT INTO `t_product` VALUES (2, 'MacBook Pro 14', 'Apple laptop M3', 12999.00, 50, '电子产品', 1, 0, '2026-07-31 21:19:48', '2026-07-31 21:19:48');
-INSERT INTO `t_product` VALUES (3, '红米k70', NULL, 1999.00, 97, NULL, 1, 0, '2026-08-02 21:53:22', '2026-08-02 21:53:22');
+INSERT INTO `t_product` VALUES (1, 'iPhone 15 Ultra', '描述内容', 8999.00, 90, '手机', NULL, 1, 0, '2026-07-30 21:09:25', '2026-08-09 15:40:20');
+INSERT INTO `t_product` VALUES (2, 'MacBook Pro 14', 'Apple laptop M3', 12999.00, 50, '电子产品', NULL, 1, 0, '2026-07-31 21:19:48', '2026-07-31 21:19:48');
+INSERT INTO `t_product` VALUES (3, '红米k70', NULL, 1999.00, 97, NULL, NULL, 1, 0, '2026-08-02 21:53:22', '2026-08-02 21:53:22');
 
 -- ----------------------------
 -- Table structure for t_user

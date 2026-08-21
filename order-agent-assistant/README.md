@@ -167,7 +167,9 @@ Vite 代理已配好：`/api`→8080、`/query`+`/approve`→8081，同样无跨
 
 ## 管理员功能（商品管理）
 
-管理员登录后导航多一个「商品管理」入口：新增 / 编辑 / 上下架商品，列表含已下架商品。
+管理员登录后导航多一个「商品管理」入口：新增 / 编辑 / 上下架商品，列表含已下架商品。新增/编辑时支持**上传商品图片**（选中即上传拿 URL，保存时随商品写入），商城卡片显示真实图片、无图回退渐变占位。
+
+图片上传链路：`POST /api/product/image`（管理员，扩展名白名单 + 文件头魔数校验 + UUID 文件名）→ 存 `app.upload-dir`（Docker 里是命名卷 `product-images:/app/uploads`）→ 返回相对 URL `/uploads/xxx.jpg` → Spring `addResourceHandlers` 静态映射 + nginx `location /uploads/` 反代访问。
 
 - **管理员账号**：`admin / admin123`（order-system 启动时自动初始化、幂等；密码可用配置 `admin.init-password` 改）
 - **接口**（`ProductController`，全部校验 ADMIN 角色，非管理员返回 403）：

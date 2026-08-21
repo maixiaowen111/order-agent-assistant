@@ -126,6 +126,7 @@
           product.setPrice(dto.getPrice());
           product.setStock(dto.getStock());
           product.setCategory(dto.getCategory());
+          product.setImage(dto.getImage());
           product.setStatus(1);  // 默认上架
           productMapper.insert(product);
 
@@ -145,6 +146,7 @@
           product.setPrice(dto.getPrice());
           product.setStock(dto.getStock());
           product.setCategory(dto.getCategory());
+          product.setImage(dto.getImage());
           productMapper.updateById(product);
 
           log.info("修改商品成功，id={}", id);
@@ -187,6 +189,7 @@
           vo.setPrice(product.getPrice());
           vo.setStock(product.getStock());
           vo.setCategory(product.getCategory());
+          vo.setImage(product.getImage());
           vo.setStatus(product.getStatus());
           vo.setCreateTime(product.getCreateTime());
           return vo;

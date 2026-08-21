@@ -21,6 +21,8 @@
 
       private String category;
 
+      private String image;
+
       private Integer status;
 
       private LocalDateTime createTime;

@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { formatMoney } from '../utils/format'
 
 const props = defineProps({
@@ -35,14 +35,34 @@ const grad = computed(() => {
   return `linear-gradient(135deg, ${a}, ${b})`
 })
 const stockOut = computed(() => Number(props.product.stock) <= 0)
+
+// 图片加载失败（文件被删/路径变更）→ 回退渐变占位，不破图
+const imgBroken = ref(false)
+watch(
+  () => props.product.image,
+  () => { imgBroken.value = false }
+)
+const showImg = computed(() => !!(props.product.image && !imgBroken.value))
+function onImgError() {
+  imgBroken.value = true
+}
 </script>
 
 <template>
   <div class="p-card" :class="{ 'is-out': stockOut }">
     <div class="p-cover" :style="{ background: grad }">
-      <span class="p-emoji">{{ emoji }}</span>
-      <span class="p-first">{{ (product.name || '?').charAt(0) }}</span>
-      <span v-if="product.category" class="p-cat">{{ product.category }}</span>
+      <img
+        v-if="showImg"
+        :src="product.image"
+        :alt="product.name"
+        class="p-img"
+        @error="onImgError"
+      />
+      <template v-else>
+        <span class="p-emoji">{{ emoji }}</span>
+        <span class="p-first">{{ (product.name || '?').charAt(0) }}</span>
+        <span v-if="product.category" class="p-cat">{{ product.category }}</span>
+      </template>
     </div>
 
     <div class="p-body">
@@ -94,6 +114,13 @@ const stockOut = computed(() => Number(props.product.stock) <= 0)
   align-items: center;
   justify-content: center;
   overflow: hidden;
+}
+.p-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .p-emoji {
   font-size: 40px;

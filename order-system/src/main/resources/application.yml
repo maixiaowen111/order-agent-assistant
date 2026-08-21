@@ -12,6 +12,16 @@ spring:
   application:
     name: order-system
 
+  # 文件上传：单文件 2MB，总请求 2MB（与 ProductController 的 MAX_IMAGE_BYTES 一致）
+  servlet:
+    multipart:
+      max-file-size: 2MB
+      max-request-size: 2MB
+
+# 商品图片存储目录（本地默认 ./uploads，Docker 用环境变量 APP_UPLOAD_DIR=/app/uploads 覆盖）
+app:
+  upload-dir: ./uploads
+
 # 服务器端口
 server:
   port: 8080

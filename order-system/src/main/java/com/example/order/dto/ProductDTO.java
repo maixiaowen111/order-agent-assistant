@@ -21,4 +21,6 @@
       private Integer stock;
 
       private String category;
+
+      private String image;
   }

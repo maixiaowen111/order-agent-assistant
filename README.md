@@ -3,7 +3,7 @@
 一个 **AI Agent 管理订单** 的可运行作品：用自然语言让 AI 帮你查单、取消订单；取消已支付的订单会自动触发退款，并在通知中心生成一条真实的退款通知。前端、决策层、执行层三层齐全，Docker 一键起，clone 下来就能跑。
 
 - 🤖 **AI 决策层** `order-agent-assistant`：Agent 循环 + 权限闸门（写操作要人工批准）+ Redis 多轮记忆 + DeepSeek 工具调用。模型是唯一决策点，代码只负责执行和搬运。
-- ⚙️ **业务执行层** `order-system`：订单状态机 + Transactional Outbox（取消+退款同事务落库）+ 通知中心 + 管理员商品管理。业务规则只留一份，agent 不直连数据库。
+- ⚙️ **业务执行层** `order-system`：订单状态机 + Transactional Outbox（取消+退款同事务落库）+ 通知中心 + 管理员商品管理（含**商品图片上传**：扩展名/魔数校验 + UUID 文件名 + 静态映射）。业务规则只留一份，agent 不直连数据库。
 - 🖥️ **前端** `frontend/`：Vue 3 精致单页——完整电商体验 + 右下角 AI 聊天面板；取消订单时聊天气泡弹出「批准执行」按钮，一键走完「确认 → 执行 → 订单刷新 → 退款通知」闭环。
 - 📦 **一键部署**：Docker Compose 起全套（MySQL + Redis + 两个后端 + 前端），浏览器只访问一个源，无跨域。
 
@@ -66,6 +66,7 @@ docker compose up -d --build
 | 5 | order-system 容器启动即崩 | Redis 地址硬编码 `localhost`，容器里 localhost=自己 |
 | 6 | curl 传中文参数落库乱码 | Windows Git Bash 按 GBK 传参（测试侧，非程序 bug） |
 | 7 | 消息对象存 Redis 再读类型不对 | Jackson 多态序列化需中间格式摊平 |
+| 8 | 全新部署商品接口报 Unknown column | compose 只挂基线 SQL，增量 migration 不自动执行，基线需同步最新结构 |
 
 ## 文档导航
 

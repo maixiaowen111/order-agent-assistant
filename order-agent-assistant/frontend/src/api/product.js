@@ -9,3 +9,10 @@ export const createProduct = (data) => http.post('/api/product', data)
 export const updateProduct = (id, data) => http.put(`/api/product/${id}`, data)
 export const updateProductStatus = (id, status) =>
   http.put(`/api/product/${id}/status`, null, { params: { status } })
+
+// 上传商品图片，返回相对 URL（/uploads/xxx.jpg），保存商品时写入 image 字段
+export const uploadImage = (file) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return http.post('/api/product/image', fd) // axios 自动带 multipart boundary，勿手动 set Content-Type
+}

@@ -21,7 +21,7 @@ http://localhost:8080
 | 模块 | 功能 |
 |------|------|
 | 用户 | 注册（BCrypt加密）、登录（JWT）、退出（黑名单踢人） |
-| 商品 | 分页浏览、分类筛选、缓存加速、后台管理 |
+| 商品 | 分页浏览、分类筛选、缓存加速、后台管理（含图片上传） |
 | 购物车 | 加入/修改/删除、同商品合并数量 |
 | 订单 | 创建（分布式锁防超卖）、支付、取消（恢复库存） |
 | 权限 | RBAC：管理员管理商品、普通用户只能购买 |
@@ -89,6 +89,7 @@ src/main/java/com/example/order/
 | 金额用 double 算错 | `0.1 + 0.2 ≠ 0.3`，金额必须 `BigDecimal` + `DECIMAL(10,2)` |
 | 业务异常该返 400 还是 500 分不清 | 4xx = 客户端问题（换输入就行），5xx = 服务端问题（代码 bug） |
 | 逻辑删除的 `WHERE id = 1` 从哪来 | 不是写死的，是 `deleteById(5)` 传参；机制是 delete 变 update |
+| 全新部署商品接口全崩 `Unknown column 'image'` | compose 只挂基线 SQL 不跑 migrations，新库缺新列——基线必须同步最新结构 |
 
 > 每个坑都有「问题 → 答案 → 口诀」的完整版，见 [project-learning-record.md](project-learning-record.md)。
 

@@ -15,6 +15,7 @@
 | 5 | order-system 容器启动即崩 | Redis 连接地址硬编码 `localhost`，容器里 localhost=自己 | 连接地址必须可配置外置，改环境变量要覆盖对地方 |
 | 6 | Windows 下 curl 中文参数乱码 | Git Bash 按系统 GBK 编码传参 | 中文存 UTF-8 文件读进变量；这是测试侧坑，不是程序 bug |
 | 7 | 消息对象存 Redis 再读出来类型不对 | Jackson 多态序列化：content 是 Object | 用中间格式摊平（PersistedMessage），别依赖 Jackson 原生多态 |
+| 8 | 全新部署商品接口报 `Unknown column` | compose 只挂基线 SQL，增量 migration 不自动执行 | 基线必须同步最新结构，别让基线和 migration 漂移 |
 
 ---
 
@@ -142,6 +143,20 @@ curl -G localhost:8081/query --data-urlencode "q=$Q" --data-urlencode "sessionId
 **修复**：不依赖 Jackson 原生多态，定义一个**中间格式** `PersistedMessage`——在存之前把 `Message` 摊平成 `text + toolCalls` 两个字段，读出来再还原成 `Message`。
 
 **面试怎么讲**：体现「序列化要显式设计，而不是依赖框架默认」——尤其涉及跨系统/跨存储（这里 Redis 缓存、以后可能是 MQ）时，中间格式是稳定边界。这也是「数据契约」思维的体现。
+
+---
+
+## 8. compose 只挂基线 SQL，增量 migration 不会自动执行
+
+**现象**：加了 `sql/migrations/20260821_01_add_product_image.sql`、实体也加了 `image` 字段，但**全新** `docker compose up` 部署后商品接口直接崩：`Unknown column 'image'`。
+
+**根因**：`docker-compose.yml` 的 mysql 服务只挂载了基线 `../sql/order_db.sql`（`/docker-entrypoint-initdb.d/01-init.sql`），而这个 init 目录**只在 MySQL 数据目录首次为空时执行一次**。`sql/migrations/` 里的增量脚本根本没有被挂载、更不会自动执行。结果就是「新代码（实体带 image 字段）＋ 旧结构（没有 image 列）＝ 崩溃」。已存在的 volume 更不会重跑基线。
+
+**修复**（双管齐下）：
+- 增量脚本管**已存在的库**：`ALTER TABLE ... ADD COLUMN`，手动执行（`mysql < 脚本` 或 `docker exec -i order-mysql mysql ... < 脚本`）。
+- **基线 `order_db.sql` 同步更新**，管**全新安装**——因为 compose 首次启动只执行基线，基线必须含最新结构。新增列后，基线的 `INSERT INTO ... VALUES (...)` 按列位置插值的种子数据也要同步补值（这次 3 条商品就在 `category` 后补了 `NULL`）。
+
+**面试怎么讲**：这个坑体现「数据库结构演进方式」的系统意识。核心一句：**容器 init 脚本只在首次启动执行，之后的结构变更一律走 migrations，所以任何 schema 变更都要同时想清两条路径——已有库怎么升级（migration）、全新库怎么建（基线），并保证两者不漂移**。大部分面试者只讲「要用 migration 管理 DDL」，你能补上「基线也要同步、否则全新部署直接炸」就是差异化。顺手可以引出「migration 工具（Flyway/Liquibase）解决的就是这个自动化问题」。
 
 ---
 

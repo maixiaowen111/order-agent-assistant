@@ -2,8 +2,10 @@ package com.example.order.config;
 
 import com.example.order.interceptor.LoginInterceptor;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -25,6 +27,21 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class WebConfig implements WebMvcConfigurer {
 
     private final LoginInterceptor loginInterceptor;
+
+    /** 商品图片存储目录（本地默认 ./uploads，Docker 用 APP_UPLOAD_DIR=/app/uploads 覆盖） */
+    @Value("${app.upload-dir:./uploads}")
+    private String uploadDir;
+
+    /**
+     * 静态资源映射：/uploads/** → 磁盘 uploads 目录。
+     * 本地 8080 直接可访问商品图片；Docker 里由 nginx location /uploads/ 反代到本服务。
+     */
+    @Override
+    public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        String dir = uploadDir.endsWith("/") ? uploadDir : uploadDir + "/";
+        registry.addResourceHandler("/uploads/**")
+                .addResourceLocations("file:" + dir);
+    }
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {

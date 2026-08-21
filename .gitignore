@@ -8,6 +8,10 @@
 
 # 环境/密钥：DEEPSEEK_API_KEY 放 .env，绝不提交 git
 .env
+# 商品图片上传目录（运行时生成，不进 git）
+order-system/uploads/
+# Claude Code 本地配置/计划（不进 git）
+.claude/
 
 # Java / Maven
 target/

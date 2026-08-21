@@ -39,6 +39,16 @@
       }
 
       /**
+       * 处理上传文件超限异常
+       * 场景：图片超过 spring.servlet.multipart.max-file-size 时，在进 Controller 前就会被抛出
+       */
+      @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+      public Result<?> handleMaxUploadSize(org.springframework.web.multipart.MaxUploadSizeExceededException e) {
+          log.warn("上传文件超限：{}", e.getMessage());
+          return Result.fail(400, "图片大小不能超过 2MB");
+      }
+
+      /**
        * 处理其他未捕获异常（兜底）
        * 场景：NullPointerException、SQLException 等意料之外的错误
        */

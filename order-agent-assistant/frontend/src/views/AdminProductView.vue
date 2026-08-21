@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { adminProductPage, createProduct, updateProduct, updateProductStatus } from '../api/product'
+import { adminProductPage, createProduct, updateProduct, updateProductStatus, uploadImage } from '../api/product'
 import { formatMoney } from '../utils/format'
 import { showToast } from '../composables/useToast'
 
@@ -14,7 +14,8 @@ const loading = ref(false)
 const modalOpen = ref(false)
 const saving = ref(false)
 const editing = ref(null) // null=新增，非 null=编辑该商品
-const form = reactive({ name: '', category: '', price: '', stock: '', description: '' })
+const form = reactive({ name: '', category: '', price: '', stock: '', description: '', image: '' })
+const uploading = ref(false)
 
 async function fetchPage(page = pageNum.value) {
   loading.value = true
@@ -44,6 +45,7 @@ function openCreate() {
   form.price = ''
   form.stock = ''
   form.description = ''
+  form.image = ''
   modalOpen.value = true
 }
 
@@ -54,6 +56,7 @@ function openEdit(p) {
   form.price = p.price ?? ''
   form.stock = p.stock ?? ''
   form.description = p.description || ''
+  form.image = p.image || ''
   modalOpen.value = true
 }
 
@@ -69,6 +72,7 @@ async function save() {
     price: Number(form.price),
     stock: Number(form.stock),
     description: form.description.trim() || null,
+    image: form.image || null,
   }
   try {
     if (editing.value) {
@@ -95,6 +99,24 @@ async function toggleStatus(p) {
     fetchPage()
   } catch {
     /* 拦截器已 toast */
+  }
+}
+
+// 选中文件即上传（先传图拿 URL，再随商品表单保存），取消/换图会留孤儿文件——本期接受
+async function onFileChange(e) {
+  const file = e.target.files[0]
+  if (!file) return
+  form.image = '' // 先清旧预览，避免换图残留旧图
+  uploading.value = true
+  try {
+    const url = await uploadImage(file)
+    form.image = url
+    showToast('图片已上传', 'success')
+  } catch {
+    /* 拦截器已 toast */
+  } finally {
+    uploading.value = false
+    e.target.value = '' // 允许重新选择同一文件
   }
 }
 
@@ -198,6 +220,20 @@ onMounted(() => fetchPage())
                     <label class="label">库存 *</label>
                     <input v-model.number="form.stock" class="input" type="number" min="0" step="1" placeholder="0" />
                   </div>
+                </div>
+                <div class="field">
+                  <label class="label">商品图片</label>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    :disabled="uploading"
+                    @change="onFileChange"
+                  />
+                  <div v-if="form.image" class="img-preview">
+                    <img :src="form.image" alt="商品图片预览" />
+                    <span class="img-name">{{ form.image.split('/').pop() }}</span>
+                  </div>
+                  <p v-if="uploading" class="img-tip">上传中…</p>
                 </div>
                 <div class="field">
                   <label class="label">描述</label>
@@ -381,6 +417,29 @@ onMounted(() => fetchPage())
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px;
+}
+.img-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.img-preview img {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+}
+.img-name {
+  font-size: 12px;
+  color: var(--text-3);
+  word-break: break-all;
+}
+.img-tip {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-3);
 }
 .modal-foot {
   display: flex;
