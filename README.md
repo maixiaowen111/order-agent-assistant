@@ -2,7 +2,7 @@
 
 一个 **AI Agent 管理订单** 的可运行作品：用自然语言让 AI 帮你查单、查商品库存、改收货地址、取消订单；取消已支付的订单会自动触发退款，并在通知中心生成一条真实的退款通知。前端、决策层、执行层三层齐全，Docker 一键起，clone 下来就能跑。
 
-- 🤖 **AI 决策层** `order-agent-assistant`：Agent 循环 + 权限闸门（写操作要人工批准）+ Redis 多轮记忆 + DeepSeek 工具调用。模型是唯一决策点，代码只负责执行和搬运。
+- 🤖 **AI 决策层** `order-agent-assistant`：Agent 循环 + 权限闸门（写操作要人工批准）+ Redis 多轮记忆 + DeepSeek 工具调用 + **MCP 兼容层**（`POST /mcp` 标准协议，Claude Desktop / Cursor 可直接连接调用工具）。模型是唯一决策点，代码只负责执行和搬运。
 - ⚙️ **业务执行层** `order-system`：订单状态机 + Transactional Outbox（取消+退款同事务落库）+ 通知中心 + 管理员商品管理（含**商品图片上传**：扩展名/魔数校验 + UUID 文件名 + 静态映射）。业务规则只留一份，agent 不直连数据库。
 - 🖥️ **前端** `frontend/`：Vue 3 精致单页——完整电商体验 + 右下角 AI 聊天面板；取消订单时聊天气泡弹出「批准执行」按钮，一键走完「确认 → 执行 → 订单刷新 → 退款通知」闭环。
 - 📦 **一键部署**：Docker Compose 起全套（MySQL + Redis + 两个后端 + 前端），浏览器只访问一个源，无跨域。
@@ -20,6 +20,7 @@
 │  · Transactional Outbox       │HTTP  │  · 权限闸门：写操作人工批准     │
 │  · 通知中心（退款通知）         │内部  │  · Redis 多轮记忆（TTL 30min） │
 │  · 管理员商品管理              │密钥  │  · DeepSeek 工具调用           │
+│                              │      │  · MCP 兼容层（/mcp 协议）       │
 └──────────┬────────────────────┘      └──────────────┬────────────────┘
            ▼                                          ▼
       MySQL (order_db)                          Redis（会话记忆）
@@ -82,7 +83,7 @@ docker compose up -d --build
 
 ```bash
 cd order-system && mvn test          # 14 个用例：状态机/通知中心/管理员引导
-cd order-agent-assistant && mvn test  # 26 个用例：AgentLoop/闸门/会话存储/工具
+cd order-agent-assistant && mvn test  # 33 个用例：AgentLoop/闸门/会话存储/工具/MCP
 ```
 
 纯 Mockito 单元测试，不依赖中间件，任何机器都能跑绿。

@@ -56,7 +56,7 @@
 订单管理就「查单 / 查库存 / 改地址 / 取消 / 退款通知」几件事，一个循环足够。多 Agent 解决的是"复杂组织的协调"问题——这里没有，硬上只会增加延迟和 token 成本。真正的关键是**权限闸门**：把"人工确认"这个动作放进决策流，模型负责决策，闸门负责边界——只读直接放行，写操作（取消、改地址）一律要人工批准，同一个闸门管所有写工具。
 
 **2. 工具层为什么符合 MCP 模型？**
-MCP 的本质是把工具以「名字 + 描述 + 输入 Schema」暴露给模型、由 executor 执行——`Tool` 接口就是这个抽象，本地直接执行省掉协议开销。如果未来要对接其他 MCP 客户端，只需把这层换成标准 MCP server，业务代码不动。
+MCP 的本质是把工具以「名字 + 描述 + 输入 Schema」暴露给模型、由 executor 执行——`Tool` 接口就是这个抽象。本仓库已经把这个抽象**真实暴露成了标准 MCP server**（`POST /mcp`，见下文「MCP 兼容层」）：Claude Desktop / Cursor 这类严格客户端可以像连接任何 MCP server 一样连上来直接用我们的工具，闸门在 `tools/call` 层照常拦截写操作。内部对话走 `Tool` 接口直接执行、零协议开销，两种入口共用同一套工具和权限。
 
 **3. 为什么不拆微服务？**
 决策层 / 执行层两个服务已经是按职责拆的最优粒度。数据层只有一份 MySQL，再拆是纯成本。
@@ -136,6 +136,35 @@ curl -G "localhost:8081/query" --data-urlencode "q=我已批准，请继续取�
 curl "localhost:8080/api/notification/my" -H "Authorization: Bearer $TOKEN"
 ```
 
+## MCP 兼容层
+
+agent 还是一个**标准 MCP server**：任何 MCP 客户端（Claude Desktop、Cursor、其他 AI IDE）连上 `http://localhost:8081/mcp` 就能发现并调用我们的工具。核心协议就三个方法，和 `Tool` 接口一一对应：
+
+| MCP 方法 | 作用 | 对应 Tool 接口 |
+|---|---|---|
+| `initialize` | 握手：告诉客户端「我是谁、支持什么」 | — |
+| `tools/list` | 发现工具：返回 name / description / inputSchema | `name() / description() / inputSchema()` |
+| `tools/call` | 调用工具 | `run(args)` |
+
+```bash
+# ① 握手
+curl -X POST "localhost:8081/mcp" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+
+# ② 发现工具（应看到 query_order / query_product_stock / cancel_order / update_order_address）
+curl -X POST "localhost:8081/mcp" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+# ③ 只读工具直接执行
+curl -X POST "localhost:8081/mcp" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_product_stock","arguments":{"productId":1}}}'
+
+# ④ 写工具被闸门拦（isError:true，不执行）
+curl -X POST "localhost:8081/mcp" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"cancel_order","arguments":{"orderNo":"<orderNo>"}}}'
+```
+
+**为什么手写、不引 MCP Java SDK**：协议核心就一个 POST 端点 + JSON-RPC 三种方法，自己实现看得见本质、零依赖，面试能讲「懂协议而不只是加依赖」；将来真要接严格客户端，只换 transport（官方 SDK），这层业务代码不动。**安全边界**：`tools/list` 列出全部工具（含写操作），但 `tools/call` 里写工具**同样走权限闸门**，MCP 层不能绕过人工批准去改数据。真实部署时建议在网关上再加一层鉴权（本实现面向演示，工具本身只读公开、写被闸门挡）。
+
 ## 前端（Vue 3 + Vite，精致单页）
 
 完整电商体验 + 右下角 AI 聊天面板，把「AI agent 管订单」做成看得见的演示。技术栈 Vue 3 + Vue Router + Pinia + Vite，不引 UI 组件库（手写 scoped CSS + 设计令牌）。
@@ -187,7 +216,7 @@ Vite 代理已配好：`/api`→8080、`/query`+`/approve`→8081，同样无跨
 ## 测试
 
 ```bash
-cd order-agent-assistant && mvn test    # 26 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析
+cd order-agent-assistant && mvn test    # 33 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / MCP 协议
 cd order-system && mvn test             # 12 个用例：取消状态机 / 通知中心越权保护
 ```
 
@@ -201,11 +230,12 @@ order-agent-assistant/     # 决策层（本仓库）
     AgentLoop.java         核心循环（模型=决策点，harness=执行）
     Tool / ToolCall        工具抽象（MCP 模型）
     PermissionGate         权限闸门（只读放行/写操作要批准）
+    McpController          MCP 兼容层（POST /mcp：initialize / tools/list / tools/call）
     RedisSessionStore      多轮记忆（TTL + 裁剪 + 损坏兜底）
     PersistedMessage       消息序列化中间格式（解决 Jackson 多态）
     DeepSeekLlmClient      LLM 通道（OpenAI 兼容 API）
     AgentController        REST 入口（/query、/approve）
-  src/test/java/           单元测试
+  src/test/java/           单元测试（33 个用例）
   Dockerfile / docker-compose.yml / .env.example
 
 order-system/              # 执行层（同级目录）
