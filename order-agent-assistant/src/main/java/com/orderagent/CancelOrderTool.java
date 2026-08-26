@@ -48,9 +48,10 @@ public class CancelOrderTool implements Tool {
 
     @Override
     public String run(Map<String, Object> args) {
-        String orderNo = (String) args.get("orderNo");
-        if (orderNo == null || orderNo.isBlank()) {
-            return "错误：缺少订单号 orderNo";
+        // 参数不能全信：可能缺失、可能是数字，统一转字符串再校验，避免 ClassCastException
+        String orderNo = args.get("orderNo") == null ? "" : String.valueOf(args.get("orderNo")).trim();
+        if (orderNo.isEmpty()) {
+            return ToolErrors.fail("INVALID_ARG", "缺少订单号 orderNo");
         }
         return api.cancelOrder(orderNo);
     }

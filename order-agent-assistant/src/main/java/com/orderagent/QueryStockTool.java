@@ -57,18 +57,18 @@ public class QueryStockTool implements Tool {
         boolean hasKw = !kw.isEmpty();
 
         if (hasId && hasKw) {
-            return "错误：productId 和 keyword 只能传一个";
+            return ToolErrors.fail("INVALID_ARG", "productId 和 keyword 只能传一个");
         }
         if (hasId) {
             try {
                 return api.queryProductStock(Long.parseLong(idStr));
             } catch (NumberFormatException e) {
-                return "错误：productId 必须是数字，收到 " + idStr;
+                return ToolErrors.fail("INVALID_ARG", "productId 必须是数字，收到 " + idStr);
             }
         }
         if (hasKw) {
             return api.queryProductSearch(kw);
         }
-        return "错误：请提供 productId（商品 id 数字）或 keyword（商品名称关键字）";
+        return ToolErrors.fail("INVALID_ARG", "请提供 productId（商品 id 数字）或 keyword（商品名称关键字）");
     }
 }

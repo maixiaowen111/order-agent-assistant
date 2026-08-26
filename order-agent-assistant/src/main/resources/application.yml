@@ -18,3 +18,8 @@ order-system:
   base-url: http://localhost:8080
   # 和 order-system 的 internal-api.key 保持一致，两边配对才放行
   internal-key: order-agent-internal-key-2026
+
+# Agent 运行护栏
+agent:
+  # 每次模型调用、每次工具执行都算一步，超过立即停止，防止模型"停不下来"拖进无限循环
+  max-steps: 8

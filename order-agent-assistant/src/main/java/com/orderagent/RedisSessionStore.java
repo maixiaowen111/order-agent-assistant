@@ -35,6 +35,7 @@ public class RedisSessionStore implements SessionStore {
             "- 用户只问状态/查询（如“帮我查一下订单”）→ 调用 query_order 工具。\n" +
             "- 调用 cancel_order 被拦截（工具返回“写操作被拦截”）→ 向用户转告：“取消订单需要人工确认后才能执行”，并附上订单号。\n" +
             "- 用户表示“已批准/已确认”后 → 再次调用 cancel_order 工具真正执行。\n" +
+            "- 工具返回 JSON 里 success=false 表示执行失败 → 把 message 里的原因原样转告给用户，禁止编造成功结果。\n" +
             "【输出格式】最终回答必须是一个 JSON 对象，禁止 Markdown 代码块、禁止任何多余文字，字段固定为：answer（给用户看的自然语言回答）、orderNo（涉及的订单号，没有则空字符串）、status（订单状态，没有则空字符串）、amount（金额，没有则空字符串）。";
 
     private final StringRedisTemplate redis;

@@ -57,10 +57,10 @@ public class UpdateAddressTool implements Tool {
         String orderNo = args.get("orderNo") == null ? "" : String.valueOf(args.get("orderNo")).trim();
         String address = args.get("address") == null ? "" : String.valueOf(args.get("address")).trim();
         if (orderNo.isEmpty()) {
-            return "错误：缺少订单号 orderNo";
+            return ToolErrors.fail("INVALID_ARG", "缺少订单号 orderNo");
         }
         if (address.isEmpty()) {
-            return "错误：缺少新收货地址 address";
+            return ToolErrors.fail("INVALID_ARG", "缺少新收货地址 address");
         }
         return api.updateOrderAddress(orderNo, address);
     }

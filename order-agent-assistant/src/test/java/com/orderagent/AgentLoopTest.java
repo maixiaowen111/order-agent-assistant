@@ -6,8 +6,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * AgentLoop 核心循环测试：用"脚本化假模型"代替 DeepSeek，
@@ -123,6 +129,31 @@ class AgentLoopTest {
     }
 
     @Test
+    void 工具执行抛异常时_循环不崩_把干净错误喂回模型() {
+        ToolCall call = new ToolCall("call_1", "query_order", Map.of("orderNo", "A123"));
+        Tool crashTool = new Tool() {
+            public String name() { return "query_order"; }
+            public String description() { return "查询订单"; }
+            public Map<String, Object> inputSchema() { return Map.of("type", "object"); }
+            public String run(Map<String, Object> args) { throw new IllegalStateException("数据库连接池耗尽"); }
+        };
+        ScriptedLlm llm = new ScriptedLlm(List.of(
+                new LlmResponse(null, List.of(call)),
+                new LlmResponse("查询失败，请稍后重试", List.of())
+        ));
+        AgentLoop loop = new AgentLoop(llm, List.of(crashTool), new AlwaysAllowGate(), new InMemoryStore());
+
+        String answer = loop.chat("s1", "查一下订单 A123");
+
+        // 循环没炸，模型收到的是干净的结构化错误（不含堆栈），并能正常收尾
+        assertThat(answer).isEqualTo("查询失败，请稍后重试");
+        List<Message> round2 = llm.received.get(1);
+        assertThat(round2).anyMatch(m -> "tool".equals(m.role())
+                && m.content().toString().contains("\"success\":false")
+                && !m.content().toString().contains("数据库连接池耗尽"));
+    }
+
+    @Test
     void markApproved把人工确认消息注入会话() {
         ScriptedLlm llm = new ScriptedLlm(List.of(new LlmResponse("收到", List.of())));
         InMemoryStore store = new InMemoryStore();
@@ -133,5 +164,35 @@ class AgentLoopTest {
         List<Message> saved = store.data.get("s1");
         assertThat(saved).anyMatch(m -> "user".equals(m.role())
                 && m.content().toString().contains("人工已确认"));
+    }
+
+    /**
+     * 无限循环测试：模型被 Mockito 钉死成"永远返回同一个工具调用"。
+     * 步数预算 8，每轮 = 模型调用(1) + 工具执行(1) = 2 步 → 4 轮后预算耗尽，
+     * 第 5 轮该调模型时 step 已到 9 > 8，直接给用户停止提示，循环安全结束。
+     */
+    @Test
+    void 模型持续返回工具调用时_超过最大步数安全停止() {
+        ToolCall call = new ToolCall("call_1", "query_order", Map.of("orderNo", "A123"));
+        LlmClient llm = mock(LlmClient.class);
+        when(llm.chat(anyList(), anyList())).thenReturn(new LlmResponse(null, List.of(call)));
+
+        AtomicInteger toolRuns = new AtomicInteger();
+        Tool countingQuery = new Tool() {
+            public String name() { return "query_order"; }
+            public String description() { return "查询订单"; }
+            public Map<String, Object> inputSchema() { return Map.of("type", "object"); }
+            public String run(Map<String, Object> args) { toolRuns.incrementAndGet(); return "订单状态：PAID"; }
+        };
+
+        AgentLoop loop = new AgentLoop(llm, List.of(countingQuery), new AlwaysAllowGate(), new InMemoryStore(), 8);
+
+        String answer = loop.chat("s1", "查一下订单");
+
+        // 没有死循环，返回了用户能看懂的停止提示
+        assertThat(answer).contains("自动停止");
+        // 预算 8 步被精确用完：模型 4 次 + 工具 4 次
+        assertThat(toolRuns.get()).isEqualTo(4);
+        verify(llm, times(4)).chat(anyList(), anyList());
     }
 }
