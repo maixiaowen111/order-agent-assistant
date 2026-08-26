@@ -195,4 +195,42 @@ class AgentLoopTest {
         assertThat(toolRuns.get()).isEqualTo(4);
         verify(llm, times(4)).chat(anyList(), anyList());
     }
+
+    /**
+     * 批量截断测试：模型一次返回 3 个工具，步数预算只有 3 步。
+     * 账：第 1 步=模型调用，第 2、3 步=前两个工具执行；轮到第 3 个工具时
+     * step 已到 4 > 3 → 预算中途耗尽，它被跳过（不执行、不调模型），
+     * 直接给用户停止提示收尾。对应"一次返回多个工具、预算中途耗尽"的边界，
+     * 此前没有任何测试覆盖这条截断逻辑。
+     */
+    @Test
+    void 模型一次返回多个工具_预算中途耗尽_超出的工具被跳过且不再调模型() {
+        ToolCall a = new ToolCall("call_a", "query_order", Map.of("orderNo", "A1"));
+        ToolCall b = new ToolCall("call_b", "query_order", Map.of("orderNo", "B1"));
+        ToolCall c = new ToolCall("call_c", "query_order", Map.of("orderNo", "C1"));
+        ScriptedLlm llm = new ScriptedLlm(List.of(new LlmResponse(null, List.of(a, b, c))));
+
+        AtomicInteger toolRuns = new AtomicInteger();
+        Tool countingQuery = new Tool() {
+            public String name() { return "query_order"; }
+            public String description() { return "查询订单"; }
+            public Map<String, Object> inputSchema() { return Map.of("type", "object"); }
+            public String run(Map<String, Object> args) { toolRuns.incrementAndGet(); return "订单状态：PAID"; }
+        };
+        InMemoryStore store = new InMemoryStore();
+        AgentLoop loop = new AgentLoop(llm, List.of(countingQuery), new AlwaysAllowGate(), store, 3);
+
+        String answer = loop.chat("s1", "帮我查三个订单");
+
+        // 只有前两个工具真执行了，第 3 个预算耗尽被跳过
+        assertThat(toolRuns.get()).isEqualTo(2);
+        // 停在给用户的提示上，没有进入下一轮模型调用
+        assertThat(answer).contains("自动停止");
+        assertThat(llm.received).hasSize(1);
+        // 被跳过的那个工具，模型收到的是"步数耗尽"说明，而不是真实执行结果
+        List<Message> saved = store.data.get("s1");
+        assertThat(saved).anyMatch(m -> "tool".equals(m.role())
+                && "call_c".equals(m.toolCallId())
+                && m.content().toString().contains("已达到最大执行步数"));
+    }
 }

@@ -97,7 +97,7 @@ docker compose up -d --build
 
 ```bash
 cd order-system && mvn test          # 14 个用例：状态机/通知中心/管理员引导
-cd order-agent-assistant && mvn test  # 51 个用例：AgentLoop/闸门/会话存储/工具/异常/脱敏/MCP
+cd order-agent-assistant && mvn test  # 52 个用例：AgentLoop/闸门/会话存储/工具/异常/脱敏/MCP
 ```
 
 纯 Mockito 单元测试，不依赖中间件，任何机器都能跑绿。
