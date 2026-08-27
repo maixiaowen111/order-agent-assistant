@@ -9,7 +9,7 @@
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│  客户端：curl（未来可接任意 MCP 客户端）                              │
+│  客户端：curl + 任意 MCP 客户端（Claude Desktop / Cursor）              │
 └───────────────────────────┬───────────────────────────────────────┘
                             │ GET /query?q=..&sessionId=..   POST /approve
                             ▼
@@ -138,7 +138,7 @@ curl "localhost:8080/api/notification/my" -H "Authorization: Bearer $TOKEN"
 
 ## MCP 兼容层
 
-agent 还是一个**标准 MCP server**：任何 MCP 客户端（Claude Desktop、Cursor、其他 AI IDE）连上 `http://localhost:8081/mcp` 就能发现并调用我们的工具。核心协议就三个方法，和 `Tool` 接口一一对应：
+agent 还是一个**标准 MCP server**：任何 MCP 客户端（Claude Desktop、Cursor、其他 AI IDE）连上 `http://localhost:8081/mcp` 就能发现并调用我们的工具。走 Streamable HTTP transport，已过**严格客户端握手**（`initialize` 协议版本协商、通知回 202、`McpHandshakeTest` 模拟客户端完整流程），连接演示见 [MCP_DEMO.md](MCP_DEMO.md)。核心协议就三个方法，和 `Tool` 接口一一对应：
 
 | MCP 方法 | 作用 | 对应 Tool 接口 |
 |---|---|---|
@@ -163,7 +163,7 @@ curl -X POST "localhost:8081/mcp" -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"cancel_order","arguments":{"orderNo":"<orderNo>"}}}'
 ```
 
-**为什么手写、不引 MCP Java SDK**：协议核心就一个 POST 端点 + JSON-RPC 三种方法，自己实现看得见本质、零依赖，面试能讲「懂协议而不只是加依赖」；将来真要接严格客户端，只换 transport（官方 SDK），这层业务代码不动。**安全边界**：`tools/list` 列出全部工具（含写操作），但 `tools/call` 里写工具**同样走权限闸门**，MCP 层不能绕过人工批准去改数据。真实部署时建议在网关上再加一层鉴权（本实现面向演示，工具本身只读公开、写被闸门挡）。
+**为什么手写、不引 MCP Java SDK**：协议核心就一个 POST 端点 + JSON-RPC 三种方法，自己实现看得见本质、零依赖，面试能讲「懂协议而不只是加依赖」；transport 已按 Streamable HTTP 规范加固（通知 202、`initialize` 版本协商），严格客户端能直接连。**安全边界**：`tools/list` 列出全部工具（含写操作），但 `tools/call` 里写工具**同样走权限闸门**，MCP 层不能绕过人工批准去改数据。真实部署时建议在网关上再加一层鉴权（本实现面向演示，工具本身只读公开、写被闸门挡）。
 
 ## 前端（Vue 3 + Vite，精致单页）
 
@@ -216,8 +216,8 @@ Vite 代理已配好：`/api`→8080、`/query`+`/approve`→8081，同样无跨
 ## 测试
 
 ```bash
-cd order-agent-assistant && mvn test    # 33 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / MCP 协议
-cd order-system && mvn test             # 12 个用例：取消状态机 / 通知中心越权保护
+cd order-agent-assistant && mvn test    # 56 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / 异常 / 脱敏 / MCP 握手
+cd order-system && mvn test             # 36 个用例：取消状态机 / 通知中心 / 脱敏 / 商品图片
 ```
 
 不依赖中间件，纯 Mockito 单元测试，任何机器都能跑绿。
@@ -235,7 +235,7 @@ order-agent-assistant/     # 决策层（本仓库）
     PersistedMessage       消息序列化中间格式（解决 Jackson 多态）
     DeepSeekLlmClient      LLM 通道（OpenAI 兼容 API）
     AgentController        REST 入口（/query、/approve）
-  src/test/java/           单元测试（33 个用例）
+  src/test/java/           单元测试（56 个用例，含 McpHandshakeTest 严格客户端握手模拟）
   Dockerfile / docker-compose.yml / .env.example
 
 order-system/              # 执行层（同级目录）
