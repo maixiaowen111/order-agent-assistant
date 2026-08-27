@@ -10,6 +10,27 @@ const pageNum = ref(1)
 const pageSize = 20
 const loading = ref(false)
 
+// —— 表格缩略图：分类渐变 + 首字回退（图片 404 时优雅降级，旧图被删不会破图）——
+const CAT_COLOR = [
+  ['#6366f1', '#8b5cf6'],
+  ['#0ea5e9', '#6366f1'],
+  ['#10b981', '#0ea5e9'],
+  ['#f59e0b', '#ef4444'],
+  ['#ec4899', '#8b5cf6'],
+]
+const brokenThumbs = reactive(new Set())
+const thumbGrad = (p) => {
+  const s = p.category || ''
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+  const [a, b] = CAT_COLOR[h % CAT_COLOR.length]
+  return `linear-gradient(135deg, ${a}, ${b})`
+}
+const thumbBroken = (p) => brokenThumbs.has(p.id)
+function onThumbBroken(p) {
+  brokenThumbs.add(p.id)
+}
+
 // —— 新增/编辑 共用模态框 ——
 const modalOpen = ref(false)
 const saving = ref(false)
@@ -144,6 +165,7 @@ onMounted(() => fetchPage())
       <table class="table">
         <thead>
           <tr>
+            <th class="thumb-col">图片</th>
             <th>名称</th>
             <th>分类</th>
             <th class="num">价格</th>
@@ -154,6 +176,18 @@ onMounted(() => fetchPage())
         </thead>
         <tbody>
           <tr v-for="p in products" :key="p.id">
+            <td>
+              <div class="thumb" :style="{ background: thumbGrad(p) }">
+                <img
+                  v-if="p.image && !thumbBroken(p)"
+                  :src="p.image"
+                  :alt="p.name"
+                  class="thumb-img"
+                  @error="onThumbBroken(p)"
+                />
+                <span v-else class="thumb-ch">{{ (p.name || '?').charAt(0) }}</span>
+              </div>
+            </td>
             <td>
               <div class="p-name">{{ p.name }}</div>
               <div class="p-desc">{{ p.description || '—' }}</div>
@@ -302,6 +336,28 @@ onMounted(() => fetchPage())
 .table td.ops {
   text-align: right;
   white-space: nowrap;
+}
+.thumb-col {
+  width: 56px;
+}
+.thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.thumb-ch {
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
 }
 .p-name {
   font-weight: 600;

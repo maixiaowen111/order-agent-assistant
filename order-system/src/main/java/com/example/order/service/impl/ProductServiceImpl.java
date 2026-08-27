@@ -10,11 +10,16 @@
  import com.example.order.vo.ProductVO;
  import lombok.RequiredArgsConstructor;
  import lombok.extern.slf4j.Slf4j;
+ import org.springframework.beans.factory.annotation.Value;
  import org.springframework.data.redis.core.RedisTemplate;
  import org.springframework.stereotype.Service;
  import org.springframework.transaction.annotation.Transactional;
  import org.springframework.util.StringUtils;
 
+ import java.io.IOException;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.nio.file.Paths;
  import java.util.List;
  import java.util.Random;
  import java.util.concurrent.TimeUnit;
@@ -37,6 +42,10 @@
      private static final int NULL_CACHE_TTL_MINUTES = 1;
 
       private final RedisTemplate<String, Object> redisTemplate;
+
+     /** 图片存储目录：本地默认 ./uploads，Docker 用 APP_UPLOAD_DIR=/app/uploads 覆盖（与 ProductController 一致） */
+     @Value("${app.upload-dir:./uploads}")
+     private String uploadDir;
 
       @Override
       public Page<ProductVO> adminPage(Integer pageNum, Integer pageSize) {
@@ -154,6 +163,7 @@
       @Transactional(rollbackFor = Exception.class)
       public ProductVO update(Long id, ProductDTO dto) {
           Product product = getById(id);
+          String oldImage = product.getImage();
           product.setName(dto.getName());
           product.setDescription(dto.getDescription());
           product.setPrice(dto.getPrice());
@@ -161,6 +171,9 @@
           product.setCategory(dto.getCategory());
           product.setImage(dto.getImage());
           productMapper.updateById(product);
+
+          // 换图后删掉磁盘上的旧图（先落库再删，DB 失败就不会误删还被引用的图）
+          deleteOldImageFile(oldImage, id, dto.getImage());
 
           log.info("修改商品成功，id={}", id);
           redisTemplate.delete(PRODUCT_CACHE_PREFIX + id);
@@ -179,6 +192,38 @@
       }
 
       // ============ 内部方法 ============
+
+      /**
+       * 换图后删磁盘上的旧图。只删本地上传的 /uploads/** 文件，且旧图不再被其他商品引用时才删。
+       * 删除失败不影响保存（记录 WARN 即可）；路径做了防穿越校验，只允许删 uploadDir 内的文件。
+       */
+      private void deleteOldImageFile(String oldImage, Long productId, String newImage) {
+          if (oldImage == null || oldImage.isBlank() || oldImage.equals(newImage)) {
+              return; // 没换图，或本来就是空，无旧文件可删
+          }
+          if (!oldImage.startsWith("/uploads/")) {
+              return; // 外链图（不是本地上传的）不碰
+          }
+          // 防御：旧图还被别的商品用着就不删（管理员手动复用了同一张图时）
+          LambdaQueryWrapper<Product> used = new LambdaQueryWrapper<>();
+          used.eq(Product::getImage, oldImage).ne(Product::getId, productId);
+          if (productMapper.selectCount(used) > 0) {
+              return;
+          }
+          String filename = oldImage.substring("/uploads/".length());
+          try {
+              Path dir = Paths.get(uploadDir).toAbsolutePath().normalize();
+              Path target = dir.resolve(filename).normalize();
+              if (!target.startsWith(dir)) {
+                  log.warn("拒绝删除 uploadDir 外的图片路径，image={}", oldImage);
+                  return;
+              }
+              Files.deleteIfExists(target);
+              log.info("已删除旧商品图片，productId={}, image={}", productId, oldImage);
+          } catch (IOException e) {
+              log.warn("删除旧商品图片失败（不影响保存），productId={}", productId, e);
+          }
+      }
 
       /**
        * 根据 ID 查询商品，不存在则抛异常
