@@ -104,6 +104,8 @@ cd order-agent-assistant && mvn test  # 56 个用例：AgentLoop/闸门/会话�
 
 纯 Mockito 单元测试，不依赖中间件，任何机器都能跑绿。
 
+**CI（GitHub Actions）**：`.github/workflows/ci.yml` —— 每次 push / 开 PR 自动跑三个并行任务（order-system 测试、agent 测试、前端生产构建）。因为测试不依赖中间件，CI 空机器直接跑绿。把代码推到 GitHub 后，Actions 页就能看到第一次跑的结果。
+
 ## 目录结构
 
 ```

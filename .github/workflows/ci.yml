@@ -1,0 +1,55 @@
+name: CI
+
+# 每次 push 到 master（或开 PR）时触发：自动跑两个后端的单元测试 + 前端生产构建。
+# 测试全是纯 Mockito 单元测试、不依赖 Redis/MySQL，换台空机器也能跑绿，正好适合 CI。
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # order-system：状态机 / 脱敏 / 商品图片等
+  test-order-system:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: order-system
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - run: mvn -B test
+
+  # agent：AgentLoop / 权限闸门 / MCP 握手等
+  test-agent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: order-agent-assistant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - run: mvn -B test
+
+  # 前端：Vue 3 生产构建（验证编译 / 打包不坏）
+  build-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: order-agent-assistant/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: order-agent-assistant/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
