@@ -11,6 +11,7 @@ import com.example.order.mapper.OrderItemMapper;
 import com.example.order.mapper.OrderMapper;
 import com.example.order.mapper.ProductMapper;
 import com.example.order.service.OrderEventService;
+import com.example.order.vo.OrderVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,14 @@ class OrderServiceImplTest {
         o.setTotalAmount(new BigDecimal("1999.00"));
         o.setUserId(5L);
         o.setReceiverPhone("13800138000");
+        return o;
+    }
+
+    /** 带完整收货信息的订单：测脱敏时用（order(...) 只设了 phone） */
+    private static Order shippingOrder(Long id, String status) {
+        Order o = order(id, status);
+        o.setReceiverName("张小明");
+        o.setReceiverAddress("上海市浦东新区张江高科技园区");
         return o;
     }
 
@@ -162,5 +171,49 @@ class OrderServiceImplTest {
         assertThat(result.get("status")).isEqualTo("CANCELLED");
         assertThat(result.get("refundTriggered")).isEqualTo(true);
         verify(eventRecordMapper).insert(any(EventRecord.class));
+    }
+
+    @Test
+    void 内部查询_收货信息脱敏() {
+        Order full = shippingOrder(1L, "PAID");
+        when(orderMapper.selectOne(any())).thenReturn(full);  // getOrderByNo
+        when(orderMapper.selectById(1L)).thenReturn(full);    // detail
+        when(orderItemMapper.selectList(any())).thenReturn(List.of());
+
+        OrderVO vo = service.getByOrderNo("NO1");
+
+        assertThat(vo.getReceiverName()).isEqualTo("张*明");
+        assertThat(vo.getReceiverPhone()).isEqualTo("138****8000");
+        assertThat(vo.getReceiverAddress()).isEqualTo("上海市浦东新***");
+    }
+
+    @Test
+    void 改地址成功_回显脱敏() {
+        Order full = shippingOrder(1L, "PAID");
+        when(orderMapper.selectOne(any())).thenReturn(full);  // getOrderByNo
+        when(orderMapper.selectById(1L)).thenReturn(full);    // detail（回显）
+        when(orderItemMapper.selectList(any())).thenReturn(List.of());
+
+        OrderVO vo = service.updateAddress("NO1", "上海市浦东新区张江");
+
+        // 写库发生了，但回显给 agent 的是打码后的地址
+        verify(orderMapper).updateById(any(Order.class));
+        assertThat(vo.getReceiverAddress()).isEqualTo("上海市浦东新***");
+        assertThat(vo.getReceiverPhone()).isEqualTo("138****8000");
+        assertThat(vo.getReceiverName()).isEqualTo("张*明");
+    }
+
+    @Test
+    void 用户端详情_仍返回完整收货信息() {
+        Order full = shippingOrder(1L, "PAID");
+        when(orderMapper.selectById(1L)).thenReturn(full);
+        when(orderItemMapper.selectList(any())).thenReturn(List.of());
+
+        OrderVO vo = service.detail(1L);
+
+        // 反向守卫：detail() 是用户端路径，订单主人该看到自己的完整地址
+        assertThat(vo.getReceiverName()).isEqualTo("张小明");
+        assertThat(vo.getReceiverPhone()).isEqualTo("13800138000");
+        assertThat(vo.getReceiverAddress()).isEqualTo("上海市浦东新区张江高科技园区");
     }
 }

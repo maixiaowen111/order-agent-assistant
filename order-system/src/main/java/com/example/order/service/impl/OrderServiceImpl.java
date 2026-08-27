@@ -17,6 +17,7 @@ import com.example.order.mapper.OrderMapper;
 import com.example.order.mapper.ProductMapper;
 import com.example.order.service.OrderEventService;
 import com.example.order.service.OrderService;
+import com.example.order.util.DesensitizeUtil;
 import com.example.order.vo.OrderVO;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -245,7 +246,8 @@ import java.util.stream.Collectors;
       @Override
       public OrderVO getByOrderNo(String orderNo) {
           Order order = getOrderByNo(orderNo);
-          return detail(order.getId());
+          // 内部读接口：收货信息脱敏后再给 agent（最小权限），用户端 detail() 仍返回完整地址
+          return DesensitizeUtil.mask(detail(order.getId()));
       }
 
       @Override
@@ -281,7 +283,8 @@ import java.util.stream.Collectors;
           order.setReceiverAddress(newAddress.trim());
           orderMapper.updateById(order);
           log.info("收货地址已更新，orderNo={}", orderNo);
-          return detail(order.getId());
+          // 回显同样脱敏：agent 写地址时自己带着完整地址来，响应无需再把它完整返回
+          return DesensitizeUtil.mask(detail(order.getId()));
       }
 
       private Order getOrderByNo(String orderNo) {

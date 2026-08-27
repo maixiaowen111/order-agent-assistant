@@ -25,6 +25,8 @@ import java.util.stream.Collectors;
  * 架构关键：agent 不再直连数据库，所有数据读写都走 order-system 的 /internal/** 接口——
  * 业务规则（状态机/库存/退款事件）只存在于业务系统一份，agent 只是"调接口的决策者"。
  * 服务间鉴权：请求头带 X-Internal-Key（与 order-system 的 internal-api.key 一致）。
+ * 收货信息最小权限：/internal/order 的读接口已由 order-system 返回脱敏后的收货信息（姓名/手机号/地址打码），
+ * 客户端原样透传，不做额外处理。
  */
 @Component
 public class OrderSystemApiClient {
