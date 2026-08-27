@@ -53,3 +53,13 @@ jobs:
           cache-dependency-path: order-agent-assistant/frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  # 端到端冒烟：起真中间件（MySQL/Redis）+ 两个后端，验证「代码+中间件+配置」协作。
+  # 单测用 Mockito 隔离了中间件，测不到内部密钥配对/收货信息脱敏/写闸门——冒烟补齐这一层。
+  # 依赖前三个 job：单元/构建先绿，才值得花时间起 Docker。本地也可跑：bash scripts/smoke.sh
+  smoke:
+    runs-on: ubuntu-latest
+    needs: [test-order-system, test-agent, build-frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/smoke.sh

@@ -104,7 +104,7 @@ cd order-agent-assistant && mvn test  # 56 个用例：AgentLoop/闸门/会话�
 
 纯 Mockito 单元测试，不依赖中间件，任何机器都能跑绿。
 
-**CI（GitHub Actions）**：`.github/workflows/ci.yml` —— 每次 push / 开 PR 自动跑三个并行任务（order-system 测试、agent 测试、前端生产构建）。因为测试不依赖中间件，CI 空机器直接跑绿。把代码推到 GitHub 后，Actions 页就能看到第一次跑的结果。
+**CI（GitHub Actions）**：`.github/workflows/ci.yml` —— 每次 push / 开 PR 自动跑三个并行任务（order-system 测试、agent 测试、前端生产构建），全绿后再跑**端到端冒烟**（`scripts/smoke.sh`：起真 MySQL/Redis + 两个后端，验证内部密钥配对 / 收货信息脱敏 / 写操作闸门——单测隔离中间件测不到的协作问题，本地 `bash scripts/smoke.sh` 也能跑）。因为测试不依赖中间件，前三个任务 CI 空机器直接跑绿。把代码推到 GitHub 后，Actions 页就能看到第一次跑的结果。
 
 ## 目录结构
 
