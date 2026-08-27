@@ -2,6 +2,8 @@ package com.orderagent;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 
 import java.util.List;
 import java.util.Map;
@@ -14,7 +16,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * MCP 兼容层测试：JSON-RPC 握手 / 发现 / 调用三种方法，以及写工具在 MCP 层也被闸门拦。
+ * MCP 兼容层测试：Streamable HTTP 传输（状态码 / 协议版本协商）+ JSON-RPC 握手、
+ * 发现、调用三种方法，以及写工具在 MCP 层也被闸门拦。
  */
 class McpControllerTest {
 
@@ -45,32 +48,67 @@ class McpControllerTest {
     }
 
     @Test
-    void initialize_握手返回协议版本和能力() {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> resp = (Map<String, Object>) controller.mcp(Map.of(
-                "jsonrpc", "2.0", "id", 1, "method", "initialize"));
-        assertThat(resp.get("id")).isEqualTo(1);
-        assertThat(resp.get("jsonrpc")).isEqualTo("2.0");
+    void initialize_回声客户端请求的协议版本() {
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
+                "jsonrpc", "2.0", "id", 1, "method", "initialize",
+                "params", Map.of("protocolVersion", "2025-06-18")));
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(resp.getBody()).isNotNull();
+
+        assertThat(resp.getBody().get("id")).isEqualTo(1);
+        assertThat(resp.getBody().get("jsonrpc")).isEqualTo("2.0");
 
         @SuppressWarnings("unchecked")
-        Map<String, Object> result = (Map<String, Object>) resp.get("result");
-        assertThat(result.get("protocolVersion")).isEqualTo("2025-03-26");
+        Map<String, Object> result = (Map<String, Object>) resp.getBody().get("result");
+        assertThat(result.get("protocolVersion")).isEqualTo("2025-06-18");
         assertThat((Map<String, Object>) result.get("serverInfo")).containsEntry("name", "order-agent");
         assertThat((Map<String, Object>) result.get("capabilities")).containsKey("tools");
+        // 规范允许的 instructions：把「写要批准」的使用说明带给客户端
+        assertThat(String.valueOf(result.get("instructions"))).contains("人工批准");
     }
 
     @Test
-    void 通知类方法_无id时返回null() {
-        assertThat(controller.mcp(Map.of("method", "notifications/initialized"))).isNull();
+    void initialize_旧版本也回声() {
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
+                "jsonrpc", "2.0", "id", 1, "method", "initialize",
+                "params", Map.of("protocolVersion", "2025-03-26")));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) resp.getBody().get("result");
+        assertThat(result.get("protocolVersion")).isEqualTo("2025-03-26");
+    }
+
+    @Test
+    void initialize_未知版本回落最新() {
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
+                "jsonrpc", "2.0", "id", 1, "method", "initialize",
+                "params", Map.of("protocolVersion", "2030-01-01")));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) resp.getBody().get("result");
+        assertThat(result.get("protocolVersion")).isEqualTo("2025-06-18");
+    }
+
+    @Test
+    void 通知类方法_回202空body() {
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(
+                Map.of("method", "notifications/initialized"));
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        assertThat(resp.getBody()).isNull();
+    }
+
+    @Test
+    void 缺method_回InvalidRequest() {
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of("jsonrpc", "2.0", "id", 9));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> error = (Map<String, Object>) resp.getBody().get("error");
+        assertThat(error.get("code")).isEqualTo(-32600);
     }
 
     @Test
     void tools_list_暴露全部工具的name和schema() {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> resp = (Map<String, Object>) controller.mcp(Map.of(
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
                 "jsonrpc", "2.0", "id", 2, "method", "tools/list"));
         @SuppressWarnings("unchecked")
-        List<?> tools = (List<?>) ((Map<String, Object>) resp.get("result")).get("tools");
+        List<?> tools = (List<?>) ((Map<String, Object>) resp.getBody().get("result")).get("tools");
         assertThat(tools).hasSize(2);
         assertThat(tools).anySatisfy(t -> {
             assertThat((Map<String, Object>) t).containsEntry("name", "query_product_stock");
@@ -82,13 +120,13 @@ class McpControllerTest {
 
     @Test
     void tools_call_只读工具直接执行() {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> resp = (Map<String, Object>) controller.mcp(Map.of(
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
                 "jsonrpc", "2.0", "id", 3, "method", "tools/call",
                 "params", Map.of("name", "query_product_stock",
                         "arguments", Map.of("productId", 1))));
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
         @SuppressWarnings("unchecked")
-        Map<String, Object> result = (Map<String, Object>) resp.get("result");
+        Map<String, Object> result = (Map<String, Object>) resp.getBody().get("result");
         assertThat(result).doesNotContainKey("isError");
         assertThat(String.valueOf(result.get("content"))).contains("库存 88 件");
         verify(readTool).run(Map.of("productId", 1));
@@ -96,13 +134,12 @@ class McpControllerTest {
 
     @Test
     void tools_call_写工具被闸门拦_不执行() {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> resp = (Map<String, Object>) controller.mcp(Map.of(
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
                 "jsonrpc", "2.0", "id", 4, "method", "tools/call",
                 "params", Map.of("name", "cancel_order",
                         "arguments", Map.of("orderNo", "2026"))));
         @SuppressWarnings("unchecked")
-        Map<String, Object> result = (Map<String, Object>) resp.get("result");
+        Map<String, Object> result = (Map<String, Object>) resp.getBody().get("result");
         assertThat(result.get("isError")).isEqualTo(true);
         assertThat(String.valueOf(result.get("content"))).contains("写操作被拦截");
         verify(writeTool, never()).run(any());
@@ -111,22 +148,20 @@ class McpControllerTest {
 
     @Test
     void tools_call_未知工具返回JSONRPC错误() {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> resp = (Map<String, Object>) controller.mcp(Map.of(
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
                 "jsonrpc", "2.0", "id", 5, "method", "tools/call",
                 "params", Map.of("name", "no_such_tool")));
         @SuppressWarnings("unchecked")
-        Map<String, Object> error = (Map<String, Object>) resp.get("error");
+        Map<String, Object> error = (Map<String, Object>) resp.getBody().get("error");
         assertThat(error.get("code")).isEqualTo(-32602);
     }
 
     @Test
     void 未知方法返回MethodNotFound() {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> resp = (Map<String, Object>) controller.mcp(Map.of(
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
                 "jsonrpc", "2.0", "id", 6, "method", "foo"));
         @SuppressWarnings("unchecked")
-        Map<String, Object> error = (Map<String, Object>) resp.get("error");
+        Map<String, Object> error = (Map<String, Object>) resp.getBody().get("error");
         assertThat(error.get("code")).isEqualTo(-32601);
     }
 }
