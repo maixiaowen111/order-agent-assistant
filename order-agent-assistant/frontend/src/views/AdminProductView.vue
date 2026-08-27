@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { adminProductPage, createProduct, updateProduct, updateProductStatus, uploadImage } from '../api/product'
+import { adminProductPage, createProduct, updateProduct, updateProductStatus, uploadImage, deleteUploadedImage } from '../api/product'
 import { formatMoney } from '../utils/format'
 import { showToast } from '../composables/useToast'
 
@@ -37,6 +37,8 @@ const saving = ref(false)
 const editing = ref(null) // null=新增，非 null=编辑该商品
 const form = reactive({ name: '', category: '', price: '', stock: '', description: '', image: '' })
 const uploading = ref(false)
+// 本次弹窗里上传过的所有图片 URL：保存时删"没保存的"，关闭时全删，避免孤儿文件堆积
+const uploadedThisSession = reactive(new Set())
 
 async function fetchPage(page = pageNum.value) {
   loading.value = true
@@ -61,6 +63,7 @@ const pages = () => {
 
 function openCreate() {
   editing.value = null
+  uploadedThisSession.clear() // 上次弹窗的清理应该已完成，这里兜底重置
   form.name = ''
   form.category = ''
   form.price = ''
@@ -72,6 +75,7 @@ function openCreate() {
 
 function openEdit(p) {
   editing.value = p
+  uploadedThisSession.clear()
   form.name = p.name || ''
   form.category = p.category || ''
   form.price = p.price ?? ''
@@ -103,6 +107,7 @@ async function save() {
       await createProduct(payload)
       showToast(`已新增商品：${payload.name}`, 'success')
     }
+    await cleanupUploaded(form.image) // form.image 已入库保留，删掉这次传了但没用上的
     modalOpen.value = false
     fetchPage()
   } catch {
@@ -123,7 +128,7 @@ async function toggleStatus(p) {
   }
 }
 
-// 选中文件即上传（先传图拿 URL，再随商品表单保存），取消/换图会留孤儿文件——本期接受
+// 选中文件即上传（先传图拿 URL，再随商品表单保存）；本次上传的 URL 都记下来，关闭时清理没保存的
 async function onFileChange(e) {
   const file = e.target.files[0]
   if (!file) return
@@ -132,6 +137,7 @@ async function onFileChange(e) {
   try {
     const url = await uploadImage(file)
     form.image = url
+    uploadedThisSession.add(url) // 记入本次弹窗的待清理名单
     showToast('图片已上传', 'success')
   } catch {
     /* 拦截器已 toast */
@@ -139,6 +145,19 @@ async function onFileChange(e) {
     uploading.value = false
     e.target.value = '' // 允许重新选择同一文件
   }
+}
+
+// 关弹窗时清理"传了但没保存"的图片：keepUrl 为 null 时全删（取消），否则只删它之外的（保存）
+async function cleanupUploaded(keepUrl) {
+  const toDelete = [...uploadedThisSession].filter((u) => u !== keepUrl)
+  uploadedThisSession.clear()
+  if (toDelete.length) await Promise.allSettled(toDelete.map((u) => deleteUploadedImage(u)))
+}
+
+async function closeModal() {
+  if (saving.value) return // 保存中不让关，避免把刚保存的图删了
+  await cleanupUploaded()
+  modalOpen.value = false
 }
 
 onMounted(() => fetchPage())
@@ -228,12 +247,12 @@ onMounted(() => fetchPage())
     <!-- 新增/编辑 模态框（复刻 CartDrawer 的 Teleport+mask 范式，改居中） -->
     <Teleport to="body">
       <Transition name="mask">
-        <div v-if="modalOpen" class="modal-mask" @click.self="modalOpen = false">
+        <div v-if="modalOpen" class="modal-mask" @click.self="closeModal()">
           <Transition name="pop" appear>
             <div class="modal">
               <div class="modal-head">
                 <h3>{{ editing ? '编辑商品' : '新增商品' }}</h3>
-                <button class="close" @click="modalOpen = false">✕</button>
+                <button class="close" @click="closeModal()">✕</button>
               </div>
 
               <div class="modal-body">
@@ -276,7 +295,7 @@ onMounted(() => fetchPage())
               </div>
 
               <div class="modal-foot">
-                <button class="btn btn-ghost" :disabled="saving" @click="modalOpen = false">取消</button>
+                <button class="btn btn-ghost" :disabled="saving" @click="closeModal()">取消</button>
                 <button class="btn btn-primary" :disabled="saving" @click="save">
                   {{ saving ? '保存中…' : editing ? '保存修改' : '创建商品' }}
                 </button>

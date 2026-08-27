@@ -9,6 +9,7 @@ import com.example.order.exception.BusinessException;
   import com.example.order.vo.ProductVO;
   import lombok.RequiredArgsConstructor;
   import org.springframework.validation.annotation.Validated;
+  import org.springframework.web.bind.annotation.DeleteMapping;
   import org.springframework.web.bind.annotation.GetMapping;
   import org.springframework.web.bind.annotation.PathVariable;
   import org.springframework.web.bind.annotation.PostMapping;
@@ -118,6 +119,17 @@ import com.example.order.exception.BusinessException;
       public Result<String> uploadImage(@RequestParam("file") MultipartFile file) {
           checkAdmin();
           return Result.success(storeImage(file));
+      }
+
+      /**
+       * 删除已上传但未保存的图片（管理员）。
+       * 前端取消/换图时清理孤儿文件；已被商品引用（已保存）的图后端会跳过，不误删。
+       */
+      @DeleteMapping("/image")
+      public Result<Void> deleteImage(@RequestParam("url") String url) {
+          checkAdmin();
+          productService.deleteUploadedImage(url);
+          return Result.success();
       }
 
       /** 校验并保存图片文件，返回可访问的相对 URL */

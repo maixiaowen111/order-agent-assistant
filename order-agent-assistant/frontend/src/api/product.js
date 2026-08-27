@@ -16,3 +16,6 @@ export const uploadImage = (file) => {
   fd.append('file', file)
   return http.post('/api/product/image', fd) // axios 自动带 multipart boundary，勿手动 set Content-Type
 }
+
+// 删除已上传但未保存的图片（清理孤儿文件）；已被商品引用的图后端会跳过，不误删
+export const deleteUploadedImage = (url) => http.delete('/api/product/image', { params: { url } })

@@ -123,4 +123,34 @@ class ProductServiceImplTest {
         assertThat(Files.exists(old)).isTrue();
         verify(productMapper, never()).selectCount(any());
     }
+
+    @Test
+    void 删除未引用的上传图_文件被删() throws IOException {
+        Path uploaded = oldFile("orphan.jpg");
+        when(productMapper.selectCount(any())).thenReturn(0L); // 没有任何商品引用
+
+        service.deleteUploadedImage("/uploads/orphan.jpg");
+
+        assertThat(Files.exists(uploaded)).isFalse();
+    }
+
+    @Test
+    void 上传图已被商品引用_不删() throws IOException {
+        Path uploaded = oldFile("orphan.jpg");
+        when(productMapper.selectCount(any())).thenReturn(1L); // 已有商品在用
+
+        service.deleteUploadedImage("/uploads/orphan.jpg");
+
+        assertThat(Files.exists(uploaded)).isTrue();
+    }
+
+    @Test
+    void 上传图是外链_不删也不查引用() throws IOException {
+        Path uploaded = oldFile("orphan.jpg");
+
+        service.deleteUploadedImage("https://example.com/x.jpg");
+
+        assertThat(Files.exists(uploaded)).isTrue();
+        verify(productMapper, never()).selectCount(any());
+    }
 }

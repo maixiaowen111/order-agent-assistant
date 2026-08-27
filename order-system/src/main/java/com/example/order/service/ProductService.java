@@ -47,4 +47,10 @@ package com.example.order.service;
        * @param status 1-上架 0-下架
        */
       void updateStatus(Long id, Integer status);
+
+      /**
+       * 删除一个已上传但未被任何商品引用的图片文件（管理员）。
+       * 前端清理"传了没保存"的孤儿图；被商品引用（已保存）的图会跳过，不误删。
+       */
+      void deleteUploadedImage(String imageUrl);
   }

@@ -191,18 +191,32 @@
           log.info("商品状态变更，id={}, status={}", id, status);
       }
 
+      @Override
+      public void deleteUploadedImage(String imageUrl) {
+          if (imageUrl == null || imageUrl.isBlank() || !imageUrl.startsWith("/uploads/")) {
+              return; // 只删本地上传的
+          }
+          // 已被商品引用的图不删（前端清理的是"没保存"的图，但防一手误删正在用的）
+          LambdaQueryWrapper<Product> used = new LambdaQueryWrapper<>();
+          used.eq(Product::getImage, imageUrl);
+          if (productMapper.selectCount(used) > 0) {
+              log.info("图片仍被商品引用，跳过删除，image={}", imageUrl);
+              return;
+          }
+          deleteImageFile(imageUrl);
+      }
+
       // ============ 内部方法 ============
 
       /**
-       * 换图后删磁盘上的旧图。只删本地上传的 /uploads/** 文件，且旧图不再被其他商品引用时才删。
-       * 删除失败不影响保存（记录 WARN 即可）；路径做了防穿越校验，只允许删 uploadDir 内的文件。
+       * 换图后删磁盘上的旧图。先落库再删；旧图不再被其他商品引用时才删。
        */
       private void deleteOldImageFile(String oldImage, Long productId, String newImage) {
           if (oldImage == null || oldImage.isBlank() || oldImage.equals(newImage)) {
               return; // 没换图，或本来就是空，无旧文件可删
           }
           if (!oldImage.startsWith("/uploads/")) {
-              return; // 外链图（不是本地上传的）不碰
+              return; // 旧图是外链，不是本地上传的，没有文件可删，也不用查引用
           }
           // 防御：旧图还被别的商品用着就不删（管理员手动复用了同一张图时）
           LambdaQueryWrapper<Product> used = new LambdaQueryWrapper<>();
@@ -210,18 +224,29 @@
           if (productMapper.selectCount(used) > 0) {
               return;
           }
-          String filename = oldImage.substring("/uploads/".length());
+          deleteImageFile(oldImage);
+      }
+
+      /**
+       * 删一个本地上传的图片文件。只碰 /uploads/**；路径做防穿越校验，只允许删 uploadDir 内的文件；
+       * 删除失败不影响主流程（记 WARN 即可）。
+       */
+      private void deleteImageFile(String imageUrl) {
+          if (imageUrl == null || !imageUrl.startsWith("/uploads/")) {
+              return; // 外链图（不是本地上传的）不碰
+          }
+          String filename = imageUrl.substring("/uploads/".length());
           try {
               Path dir = Paths.get(uploadDir).toAbsolutePath().normalize();
               Path target = dir.resolve(filename).normalize();
               if (!target.startsWith(dir)) {
-                  log.warn("拒绝删除 uploadDir 外的图片路径，image={}", oldImage);
+                  log.warn("拒绝删除 uploadDir 外的图片路径，image={}", imageUrl);
                   return;
               }
               Files.deleteIfExists(target);
-              log.info("已删除旧商品图片，productId={}, image={}", productId, oldImage);
+              log.info("已删除商品图片文件，image={}", imageUrl);
           } catch (IOException e) {
-              log.warn("删除旧商品图片失败（不影响保存），productId={}", productId, e);
+              log.warn("删除商品图片失败，image={}", imageUrl, e);
           }
       }
 
