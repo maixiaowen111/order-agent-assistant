@@ -11,6 +11,8 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -46,6 +48,8 @@ class McpHandshakeTest {
 
         gate = mock(WritePermissionGate.class);
         when(gate.reason(any())).thenReturn("写操作被拦截：需要人工确认后才能执行。");
+        // 默认：写工具被拦（未批准）——"批准后重试"用例明确覆写 blocks 才放行
+        when(gate.blocks(any(), anyString(), any())).thenReturn(true);
 
         controller = new McpController(List.of(queryStock, queryOrder, updateAddress, cancelOrder), gate);
     }
@@ -124,8 +128,31 @@ class McpHandshakeTest {
         Map<String, Object> writeResult = (Map<String, Object>) write.getBody().get("result");
         assertThat(writeResult.get("isError")).isEqualTo(true);
         assertThat(String.valueOf(writeResult.get("content"))).contains("写操作被拦截");
+        // 拦下时带批准入口和 MCP 会话 sessionId（mcp-<userId>），客户端拿它去 /approve
+        assertThat(String.valueOf(writeResult.get("content"))).contains("/approve").contains("mcp-1");
         verify(updateAddress, never()).run(any());
         verify(cancelOrder, never()).run(any());
         verify(gate).reason(any());
+        verify(gate).blocks(any(), eq("mcp-1"), eq(1L));
+    }
+
+    @Test
+    void 写工具批准后_重试同参数_真正执行并通知闸门() {
+        when(gate.blocks(any(), anyString(), any())).thenReturn(false);  // 已批准 → 放行
+        when(updateAddress.run(any())).thenReturn("订单 2026 收货地址已更新为上海市浦东新区");
+
+        ResponseEntity<Map<String, Object>> write = send(Map.of(
+                "jsonrpc", "2.0", "id", 4, "method", "tools/call",
+                "params", Map.of("name", "update_order_address",
+                        "arguments", Map.of("orderNo", "2026", "address", "上海市浦东新区"))));
+
+        assertThat(write.getStatusCode()).isEqualTo(HttpStatus.OK);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> writeResult = (Map<String, Object>) write.getBody().get("result");
+        assertThat(writeResult).doesNotContainKey("isError");   // 批准后正常执行，不是错误
+        assertThat(String.valueOf(writeResult.get("content"))).contains("地址已更新");
+        verify(updateAddress).run(Map.of("orderNo", "2026", "address", "上海市浦东新区"));
+        // 一次性批准执行完要通知闸门消费（防一次批准反复复用）
+        verify(gate).afterToolExecuted(any(), eq("mcp-1"), eq(1L), eq("订单 2026 收货地址已更新为上海市浦东新区"));
     }
 }

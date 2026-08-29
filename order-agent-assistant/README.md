@@ -168,12 +168,20 @@ curl -X POST "localhost:8081/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-
 curl -X POST "localhost:8081/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_product_stock","arguments":{"productId":1}}}'
 
-# ④ 写工具被闸门拦（isError:true，不执行）
+# ④ 写工具未批准 → 被闸门拦（isError:true，正文带 /approve 入口和 sessionId=mcp-<userId>，不执行）
 curl -X POST "localhost:8081/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"cancel_order","arguments":{"orderNo":"<orderNo>"}}}'
+
+# ⑤ 人工批准（MCP 会话固定是 mcp-<userId>，从登录 token 的 userId 推导；与 /query 的聊天会话隔离）
+curl -X POST "localhost:8081/approve" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"sessionId":"mcp-<你的userId>"}'
+
+# ⑥ 批准后模型重试同一操作 → 真正执行
+curl -X POST "localhost:8081/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"cancel_order","arguments":{"orderNo":"<orderNo>"}}}'
 ```
 
-**为什么手写、不引 MCP Java SDK**：协议核心就一个 POST 端点 + JSON-RPC 三种方法，自己实现看得见本质、零依赖，面试能讲「懂协议而不只是加依赖」；transport 已按 Streamable HTTP 规范加固（通知 202、`initialize` 版本协商），严格客户端能直接连。**安全边界**：整个 `/mcp` 都要登录（`Authorization: Bearer <order-system JWT>`，Claude Desktop / Cursor 在配置的 headers 字段里带上）——查订单含收货信息，绝不能匿名；`tools/list` 列出全部工具（含写操作），但 `tools/call` 里写工具**同样走权限闸门**，MCP 层不能绕过人工批准去改数据。
+**为什么手写、不引 MCP Java SDK**：协议核心就一个 POST 端点 + JSON-RPC 三种方法，自己实现看得见本质、零依赖，面试能讲「懂协议而不只是加依赖」；transport 已按 Streamable HTTP 规范加固（通知 202、`initialize` 版本协商），严格客户端能直接连。**安全边界**：整个 `/mcp` 都要登录（`Authorization: Bearer <order-system JWT>`，Claude Desktop / Cursor 在配置的 headers 字段里带上）——查订单含收货信息，绝不能匿名；`tools/list` 列出全部工具（含写操作），`tools/call` 里写工具**走完整的写审批闭环**——未批准 → `isError:true`（正文带 /approve 入口和 `sessionId=mcp-<userId>`）→ 人工 `POST /approve` → 模型重试同一操作 → 闸门消费批准真正执行。MCP 无会话概念，用 `mcp-<userId>` 命名空间会话复用 /approve 通道，只放行内嵌 userId 与登录人一致的会话——MCP 层绕不过人工批准，别人也批不了你的。
 
 ## 前端（Vue 3 + Vite，精致单页）
 
@@ -226,7 +234,7 @@ Vite 代理已配好：`/api`→8080、`/query`+`/approve`→8081，同样无跨
 ## 测试
 
 ```bash
-cd order-agent-assistant && mvn test    # 146 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / 限流 / 请求体上限 / 异常 / 脱敏 / MCP 握手
+cd order-agent-assistant && mvn test    # 150 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / 限流 / 请求体上限 / 异常 / 脱敏 / MCP 握手 + 写审批闭环（未批准拦下 → /approve(mcp-<userId>) → 批准后真正执行）
 cd order-system && mvn test             # 49 个用例：取消状态机 / 通知中心 / 脱敏 / 商品图片 / 订单归属 / 事件重试
 ```
 
@@ -246,7 +254,7 @@ order-agent-assistant/     # 决策层（本仓库）
     DeepSeekLlmClient      LLM 通道（OpenAI 兼容 API）
     AgentController        REST 入口（/query、/approve）
     langchain4j/           并行接入实验模块（用 LangChain4j 框架接入 DeepSeek 的探索：意图识别、写工具提议闸门、Demo）
-  src/test/java/           单元测试（146 个用例，含 McpHandshakeTest 严格客户端握手模拟）
+  src/test/java/           单元测试（150 个用例，含 McpHandshakeTest 严格客户端握手模拟 + 写审批闭环）
   Dockerfile / docker-compose.yml / .env.example
 
 order-system/              # 执行层（同级目录）

@@ -206,6 +206,30 @@ class AgentControllerTest {
     }
 
     @Test
+    void approve_mcp命名空间会话_内嵌userId与登录人一致_放行() {
+        AgentUserContext.set(UID);
+        when(store.ownerOf("mcp-1")).thenReturn(null);   // MCP 会话无归属记录，靠命名空间校验
+
+        Map<String, String> result = controller.approve(new AgentApproveRequest("mcp-1"));
+
+        assertThat(result).containsKey("result");
+        verify(gate).approve(UID, "mcp-1");               // 手写闸门放行该 MCP 会话的最后一次写调用
+        // MCP 会话不是聊天会话：不喂模型"已批准"（没有 AgentLoop 历史可注入）
+        verify(loop, never()).markApproved(anyString());
+    }
+
+    @Test
+    void approve_mcp会话内嵌userId与登录人不符_403() {
+        AgentUserContext.set(UID);                        // 登录人是 1
+        when(store.ownerOf("mcp-2")).thenReturn(null);    // MCP-2 是用户 2 的命名空间
+
+        assertThatThrownBy(() -> controller.approve(new AgentApproveRequest("mcp-2")))
+                .isInstanceOfSatisfying(AgentAuthException.class, e -> assertThat(e.status()).isEqualTo(403));
+        verify(gate, never()).approve(any(), any());
+        verify(loop, never()).markApproved(any());
+    }
+
+    @Test
     void approve_批准LangChain4j最后被拦的提议_同提议可执行() {
         AgentUserContext.set(UID);
         when(store.ownerOf("s1")).thenReturn(UID);

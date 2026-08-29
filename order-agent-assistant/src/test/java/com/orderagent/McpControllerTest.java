@@ -11,6 +11,8 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -48,6 +50,8 @@ class McpControllerTest {
 
         gate = mock(WritePermissionGate.class);
         when(gate.reason(any())).thenReturn("写操作被拦截：需要人工确认后才能执行（订单 2026）。");
+        // 默认：写工具被拦（未批准）——每个写工具用例明确覆写 blocks 才放行
+        when(gate.blocks(any(), anyString(), any())).thenReturn(true);
 
         controller = new McpController(List.of(readTool, writeTool), gate);
     }
@@ -157,7 +161,7 @@ class McpControllerTest {
     }
 
     @Test
-    void tools_call_写工具被闸门拦_不执行() {
+    void tools_call_写工具被闸门拦_不执行_带批准入口() {
         ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
                 "jsonrpc", "2.0", "id", 4, "method", "tools/call",
                 "params", Map.of("name", "cancel_order",
@@ -166,8 +170,31 @@ class McpControllerTest {
         Map<String, Object> result = (Map<String, Object>) resp.getBody().get("result");
         assertThat(result.get("isError")).isEqualTo(true);
         assertThat(String.valueOf(result.get("content"))).contains("写操作被拦截");
+        // 闭环：拦下时不只给原因，还给 /approve 入口和本次 MCP 会话的 sessionId（mcp-<userId>）
+        assertThat(String.valueOf(result.get("content")))
+                .contains("/approve")
+                .contains("mcp-1");
         verify(writeTool, never()).run(any());
         verify(gate).reason(any());
+        // 用户 1 的 MCP 写操作，会话必须是 mcp-1（别人拿 mcp-2 批不了）
+        verify(gate).blocks(any(), eq("mcp-1"), eq(1L));
+    }
+
+    @Test
+    void tools_call_写工具已批准_真正执行并通知闸门() {
+        when(gate.blocks(any(), anyString(), any())).thenReturn(false);  // 已批准 → 放行
+        when(writeTool.run(any())).thenReturn("已取消订单 2026");
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
+                "jsonrpc", "2.0", "id", 4, "method", "tools/call",
+                "params", Map.of("name", "cancel_order",
+                        "arguments", Map.of("orderNo", "2026"))));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) resp.getBody().get("result");
+        assertThat(result).doesNotContainKey("isError");   // 批准后正常执行，不是错误
+        assertThat(String.valueOf(result.get("content"))).contains("已取消订单");
+        verify(writeTool).run(Map.of("orderNo", "2026"));
+        // 一次性批准执行完要通知闸门消费，防一次批准反复复用
+        verify(gate).afterToolExecuted(any(), eq("mcp-1"), eq(1L), eq("已取消订单 2026"));
     }
 
     @Test

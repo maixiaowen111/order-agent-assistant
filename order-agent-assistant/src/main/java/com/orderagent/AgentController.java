@@ -20,6 +20,11 @@ import java.util.UUID;
  * 解析出 userId 放进 AgentUserContext，这里取出来校验会话归属、绑定批准。
  * sessionId 不再是无主的——伪造/冒用别人的 sessionId 会被 403 拒绝。
  *
+ * MCP 的批准通道（McpController 的写工具也走这里）：
+ *   MCP 无会话概念，sessionId 固定为 "mcp-<userId>" 命名空间——它没有归属记录，
+ *   批准时按命名空间内嵌的 userId 校验：必须等于当前登录用户才放行（见 approve）。
+ *   这类会话不是聊天会话，markApproved（喂模型"已批准"）对它跳过。
+ *
  * 本层的防御（除了登录，还有）：
  *   ① 请求体用 DTO，q 必填、有最大长度，sessionId 有长度/字符集校验（防超长/怪异 key）；
  *   ② 限流：每用户每分钟 /query、/approve 各限次数，超限 429（见 RateLimiter）；
@@ -84,13 +89,28 @@ public class AgentController {
 
         // 只能批准自己名下的会话：防止 A 冒用 B 的 sessionId 给 B 的写操作"点头"
         Long owner = store.ownerOf(sid);
+        if (owner == null && sid.startsWith("mcp-")) {
+            // MCP 会话无状态（没有归属记录），但 sessionId 是 "mcp-<userId>" 命名空间：
+            // 内嵌的 userId 必须等于当前登录用户，才能批准自己的 MCP 写操作。
+            // 解析失败 / 不匹配 → 落到下方 403。
+            try {
+                if (Long.parseLong(sid.substring("mcp-".length())) == userId) {
+                    owner = userId;
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
         if (owner == null || !owner.equals(userId)) {
             throw new AgentAuthException(403, "无权访问该会话");
         }
 
         gate.approve(userId, sid);                          // 手写路径：放行"该会话最后被拦的那次写调用"
         proposalGate.approveLastBlocked(userId, sid);       // LangChain4j 路径：放行"最后被拦的那次提议"（工具+参数指纹级）
-        loop.markApproved(sid);                             // 手写路径：喂给模型"已批准"（认知）
+        // MCP 会话不是聊天会话（没有 AgentLoop 的历史/提示词）——markApproved 喂给模型"已批准"
+        // 对它无意义，跳过；聊天会话（/query 的 sessionId）仍要走，让模型的认知跟上闸门状态。
+        if (!sid.startsWith("mcp-")) {
+            loop.markApproved(sid);
+        }
         return Map.of("result", "已批准该会话的写操作，现在重新让 agent 执行即可");
     }
 

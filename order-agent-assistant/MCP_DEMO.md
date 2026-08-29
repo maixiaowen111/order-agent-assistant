@@ -63,14 +63,14 @@ npx @modelcontextprotocol/inspector
 
 **写操作（演示批准闭环）：**
 1. 让模型「把订单 2026... 的地址改成 上海市浦东新区」
-2. 模型调 `update_order_address` → 被闸门拦 → 返回 `isError:true`「需要人工确认后才能执行」，客户端里模型会转述这句话
-3. 打开浏览器（或 curl）批准（`/approve` 也要登录凭证，sessionId 放 body）：
+2. 模型调 `update_order_address` → 未批准 → 返回 `isError:true`，正文带「需要人工确认 + 批准入口 + 本次会话 sessionId」（MCP 无会话概念，会话固定是 `mcp-<你的userId>`，block 响应里直接给出，也可从登录 token 的 userId 推导）
+3. 批准（`/approve` 也要登录凭证，body 里的 sessionId 填 `mcp-<你的userId>`）：
    ```bash
    curl -X POST "http://localhost:8081/approve" -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: application/json" -d '{"sessionId":"你的会话id"}'
+     -H "Content-Type: application/json" -d '{"sessionId":"mcp-<你的userId>"}'
    ```
-   （前端聊天面板会直接弹「批准执行」按钮，点了就走同一条链路）
-4. 再让模型重试 → 这次真正改成功
+   （前端聊天面板会直接弹「批准执行」按钮，点了走同一条链路；MCP 会话批准后**跳过**"注入已批准消息"——它不是聊天会话，没有 AgentLoop 历史可注入）
+4. 再让模型重试**同一操作** → 这次真正执行（批准一次性：改参数 / 换工具 / 换用户 / 过期都要重新批准）
 
 ## 原理（30 秒讲清楚）
 
@@ -78,13 +78,13 @@ npx @modelcontextprotocol/inspector
 |----|---------|
 | Transport | Streamable HTTP：单 `POST /mcp`；通知回 **202** 空 body；`initialize` 做**协议版本协商**（支持 2025-06-18 / 2025-03-26，客户端版本受支持就回声） |
 | 发现 | `tools/list` 把 Tool 接口的 name/description/inputSchema 原样暴露成 MCP 工具 |
-| 调用 | `tools/call` 只读直接跑；**写工具走同一个权限闸门**，返回 `isError:true`，绝不真正执行 |
+| 调用 | `tools/call` 只读直接跑；**写工具走同一个权限闸门**：未批准 → `isError:true`（正文带 /approve 入口 + `mcp-<userId>` 会话）；已批准 → 真正执行 + 消费一次性批准 |
 | 刻意不做 | 会话管理（`Mcp-Session-Id`）和 SSE 流式响应都是规范里对服务器的可选能力，跳过；手写 JSON-RPC 零依赖，将来要接官方 SDK transport 这层业务代码不动 |
 
-完整握手序列（对应 `McpHandshakeTest`）：`initialize` → `notifications/initialized`(202) → `tools/list` → `tools/call` 只读 → `tools/call` 写被拦。
+完整握手序列（对应 `McpHandshakeTest`）：`initialize` → `notifications/initialized`(202) → `tools/list` → `tools/call` 只读 → `tools/call` 写未批准被拦（带 sessionId）→ `/approve`（`mcp-<userId>`）→ `tools/call` 写已批准真正执行。
 
 ## 常见问题
 
 - **客户端连不上 / 握手 401**：确认 agent 起着、URL 没拼错（`http://localhost:8081/mcp`，不是 8080）；**`/mcp` 要登录**——headers 里 `Authorization: Bearer <token>` 是否填了、token 是不是刚从 order-system 登录拿的（过期/不对会 401）；看 agent 日志有没有请求进来
-- **写操作永远成功不了**：批准是 per-session 的，浏览器 `POST /approve` 时 sessionId 要和客户端会话对应；批准后**重新让模型执行**那一步（不是客户端自动重试）
+- **写操作永远成功不了**：批准是 per-session 的。MCP 的会话固定是 `mcp-<你的userId>`（block 响应正文里也直接给出），`POST /approve` 的 body 里 sessionId 填它；批准后**重新让模型执行同一操作**那一步（不是客户端自动重试）。批准一次性：改参数 / 换工具 / 换用户 / 过期都要重新批准
 - **想改端口**：`application.yml` 的 `server.port`，Claude Desktop 配置里的 URL 同步改

@@ -28,8 +28,12 @@ import java.util.Map;
  * 安全边界：
  *   ① 整个 /mcp 都要登录（Authorization: Bearer <order-system JWT>，见 WebConfig）——
  *      读订单数据绝不能匿名；拦截器把 userId 放进 AgentUserContext，调用链据此带 X-User-Id。
- *   ② tools/list 列出全部工具（含写操作），但 tools/call 里写工具**同样被权限闸门拦截**——
- *      MCP 层不能绕过人工批准去改数据。
+ *   ② tools/list 列出全部工具（含写操作）；tools/call 的写工具走权限闸门，闭环如下：
+ *      未批准 → 拦下（isError，正文带 sessionId 和 /approve 入口）→ 人工调 POST /approve 批准
+ *      → 模型重试同一操作 → 闸门消费批准真正执行。MCP 层绝不能绕过人工批准去改数据。
+ *      会话语义：MCP 无会话概念（无 Mcp-Session-Id 头），用可推导的命名空间会话
+ *      "mcp-<userId>" 当 sessionId 复用 /approve 的批准通道——只放行内嵌 userId 与登录人
+ *      一致的 mcp- 会话，别人拿你的 sessionId 照样批不了。
  *
  * 明确不做（规范里对服务器都是可选能力，客户端照常工作）：
  *   会话管理（Mcp-Session-Id 头）——保持无状态；
@@ -102,12 +106,13 @@ public class McpController {
         }).toList();
     }
 
-    /** tools/call：只读工具直接执行；写工具被闸门拦截，绝不执行。 */
+    /** tools/call：只读工具直接执行；写工具走闸门（未批准拦下 / 已批准执行）。 */
     private ResponseEntity<Map<String, Object>> callTool(Object id, Map<String, Object> params) {
         // 纵深防御：拦截器已保证 /mcp 有 Bearer token，这里再确认用户身份在上下文中。
         // 工具调用链（OrderSystemApiClient）靠 AgentUserContext 决定带不带 X-User-Id——
         // 没有它，内部接口查订单会因缺少用户身份被拒。
-        if (AgentUserContext.get() == null) {
+        Long userId = AgentUserContext.get();
+        if (userId == null) {
             return ResponseEntity.ok(rpcError(id, -32001, "未登录：/mcp 需要 Authorization: Bearer <JWT>"));
         }
 
@@ -122,12 +127,24 @@ public class McpController {
             return ResponseEntity.ok(rpcError(id, -32602, "Unknown tool: " + name));
         }
 
-        // 写操作：MCP 层也走闸门，防止绕过人工批准直接改数据
+        // 写操作：MCP 层也走闸门，防止绕过人工批准直接改数据。
+        // MCP 无会话概念，用可推导的命名空间会话 "mcp-<userId>" 当 sessionId：
+        //   未批准 → blocks() 拦下并记住 pending → 返回 isError + 批准入口（含 sessionId）
+        //   已批准 → blocks() 原子消费批准返回 false → 真正执行 → afterToolExecuted 通知闸门
+        String sessionId = "mcp-" + userId;
         ToolCall call = new ToolCall(String.valueOf(id), name, args);
         if (!tool.readOnly()) {
-            return ResponseEntity.ok(rpc(id, Map.of(
-                    "content", List.of(Map.of("type", "text", "text", gate.reason(call))),
-                    "isError", true)));
+            if (gate.blocks(call, sessionId, userId)) {
+                String text = gate.reason(call)
+                        + " 批准入口：POST /approve（Authorization: Bearer <token>），"
+                        + "body={\"sessionId\":\"" + sessionId + "\"}，然后让模型重试同一操作。";
+                return ResponseEntity.ok(rpc(id, Map.of(
+                        "content", List.of(Map.of("type", "text", "text", text)),
+                        "isError", true)));
+            }
+            String result = tool.run(args);
+            gate.afterToolExecuted(call, sessionId, userId, result);
+            return ResponseEntity.ok(rpc(id, Map.of("content", List.of(Map.of("type", "text", "text", result)))));
         }
 
         String result = tool.run(args);
