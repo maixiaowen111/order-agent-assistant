@@ -2,9 +2,11 @@ package com.orderagent;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * Redis 版一次性批准凭证。key = agent:approval:{userId}:{sessionId}:{toolName}，value = 参数指纹(JSON)。
@@ -17,6 +19,17 @@ import java.time.Duration;
 public class RedisApprovalStore implements WriteApprovalStore {
 
     private static final String PREFIX = "agent:approval:";
+
+    /**
+     * 原子"读+比对+删"：GET 到的指纹必须等于期望指纹才 DEL。
+     * Redis 单线程执行整个脚本，两个并发 claim 只有一个能看到值并删掉它，另一个读到 nil 返回 0。
+     * 这就是"批准一次性、同一凭证只能被一个请求抢到"的原子保证。
+     * （GET → 执行 → DELETE 两步之间有竞态窗口，不能用来抢占批准。）
+     */
+    private static final DefaultRedisScript<Long> CLAIM_SCRIPT = new DefaultRedisScript<>(
+            "local v = redis.call('GET', KEYS[1]);"
+                    + "if v == ARGV[1] then return redis.call('DEL', KEYS[1]); else return 0; end",
+            Long.class);
 
     private final StringRedisTemplate redis;
     private final Duration ttl;
@@ -44,5 +57,14 @@ public class RedisApprovalStore implements WriteApprovalStore {
     @Override
     public void consume(Long userId, String sessionId, String toolName) {
         redis.delete(key(userId, sessionId, toolName));
+    }
+
+    @Override
+    public boolean claim(Long userId, String sessionId, String toolName, String expectedFingerprint) {
+        if (expectedFingerprint == null) {
+            return false; // 指纹都算不出来 → 无法匹配任何批准 → fail-closed，不碰 Redis
+        }
+        Long result = redis.execute(CLAIM_SCRIPT, List.of(key(userId, sessionId, toolName)), expectedFingerprint);
+        return result != null && result == 1L; // 1 = 指纹匹配且已删除（抢到）；0 = 没抢到
     }
 }

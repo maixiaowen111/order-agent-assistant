@@ -17,4 +17,12 @@ public interface WriteApprovalStore {
 
     /** 成功执行后消费掉这条批准（一次性）。 */
     void consume(Long userId, String sessionId, String toolName);
+
+    /**
+     * 原子抢占这份批准：仅当存的参数指纹与 expectedFingerprint 完全一致时，读取并删除它。
+     * 返回 true = 抢到了（已消费）；false = 没抢到（没有批准 / 参数不符 / 已被别的请求抢走）。
+     * 必须原子：同一批准凭证被两个请求同时 claim，只允许一个成功——否则"批准一次"会被放行两次，
+     * 写操作可能被执行两遍。实现用 Redis Lua 或 ConcurrentHashMap.remove(key, value)。
+     */
+    boolean claim(Long userId, String sessionId, String toolName, String expectedFingerprint);
 }

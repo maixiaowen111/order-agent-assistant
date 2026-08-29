@@ -37,22 +37,32 @@ class AgentLoopTest {
         public boolean readOnly() { return false; }
     };
 
-    /** 内存版存储：测试用，顺便验证 AgentLoop 真的存取了会话。 */
+    /** 内存版存储：测试用，顺便验证 AgentLoop 真的存取了会话。带版本号 CAS + SETNX，与 Redis 实现同语义。 */
     private static class InMemoryStore implements SessionStore {
         final Map<String, List<Message>> data = new ConcurrentHashMap<>();
+        final Map<String, Integer> versions = new ConcurrentHashMap<>();
         final Map<String, Long> owners = new ConcurrentHashMap<>();
 
-        public List<Message> getOrCreate(String sessionId) {
-            return data.computeIfAbsent(sessionId,
+        public SessionSnapshot getOrCreate(String sessionId) {
+            List<Message> list = data.computeIfAbsent(sessionId,
                     id -> new ArrayList<>(List.of(Message.system("你是测试助手"))));
+            return new SessionSnapshot(new ArrayList<>(list), versions.getOrDefault(sessionId, 0));
         }
 
-        public void save(String sessionId, List<Message> messages) {
-            data.put(sessionId, new ArrayList<>(messages));
+        public boolean saveIfUnchanged(String sessionId, List<Message> messages, int expectedVersion) {
+            synchronized (this) {
+                int cur = versions.getOrDefault(sessionId, 0);
+                if (cur != expectedVersion) {
+                    return false; // 版本已被并发请求改掉 → 不写，防止覆盖对方历史
+                }
+                data.put(sessionId, new ArrayList<>(messages));
+                versions.put(sessionId, cur + 1);
+                return true;
+            }
         }
 
-        public void bindOwner(String sessionId, Long userId) {
-            owners.put(sessionId, userId);
+        public boolean bindOwnerIfAbsent(String sessionId, Long userId) {
+            return owners.putIfAbsent(sessionId, userId) == null; // SETNX 语义
         }
 
         public Long ownerOf(String sessionId) {
@@ -160,6 +170,47 @@ class AgentLoopTest {
         assertThat(round2).anyMatch(m -> "tool".equals(m.role())
                 && m.content().toString().contains("\"success\":false")
                 && !m.content().toString().contains("数据库连接池耗尽"));
+    }
+
+    @Test
+    void 会话保存版本冲突时_返回提示不覆盖() {
+        // saveIfUnchanged 永远返回 false → 模拟"另一个请求抢先改了同一会话"（版本 CAS 失败）
+        SessionStore conflicting = new InMemoryStore() {
+            @Override
+            public boolean saveIfUnchanged(String sessionId, List<Message> messages, int expectedVersion) {
+                return false;
+            }
+        };
+        AgentLoop loop = new AgentLoop(
+                new ScriptedLlm(List.of(new LlmResponse("查单结果：PAID", List.of()))),
+                List.of(QUERY), new AlwaysAllowGate(), conflicting);
+
+        String answer = loop.chat("s1", 1L, "查一下订单");
+
+        // 宁可本次回答不落盘，也不覆盖别人刚写下的历史——给用户可理解的重试提示
+        assertThat(answer).contains("冲突");
+    }
+
+    @Test
+    void 同一会话两个并发保存_版本CAS只有一个成功() {
+        InMemoryStore store = new InMemoryStore();
+        store.saveIfUnchanged("s1", List.of(Message.user("第一条")), 0); // 版本 0→1
+
+        // 两个请求都读到版本 1，各自追加消息后保存：只有第一个能成功，第二个版本不符被拒
+        SessionSnapshot a = store.getOrCreate("s1");
+        SessionSnapshot b = store.getOrCreate("s1");
+        assertThat(a.version()).isEqualTo(1);
+
+        List<Message> aList = a.messages();
+        aList.add(Message.user("A 的追加"));
+        List<Message> bList = b.messages();
+        bList.add(Message.user("B 的追加"));
+
+        boolean first = store.saveIfUnchanged("s1", aList, 1);
+        boolean second = store.saveIfUnchanged("s1", bList, 1);
+
+        assertThat(first ^ second).isTrue();  // 一成一败：不会两个都写
+        assertThat(store.data.get("s1")).anyMatch(m -> "user".equals(m.role())); // 历史仍在，没被覆盖空
     }
 
     @Test

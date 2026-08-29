@@ -1,5 +1,6 @@
 package com.orderagent;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -17,7 +18,9 @@ import static org.mockito.Mockito.when;
 
 /**
  * MCP 兼容层测试：Streamable HTTP 传输（状态码 / 协议版本协商）+ JSON-RPC 握手、
- * 发现、调用三种方法，以及写工具在 MCP 层也被闸门拦。
+ * 发现、调用三种方法，写工具在 MCP 层也被闸门拦，以及未登录不能 tools/call。
+ * 注：真正拦截未登录请求的是 AgentAuthInterceptor（挂在 /mcp 上，见 WebConfig），
+ * 这里测的是 Controller 层的纵深防御 + 登录态下的工具调用。
  */
 class McpControllerTest {
 
@@ -28,6 +31,8 @@ class McpControllerTest {
 
     @BeforeEach
     void setUp() {
+        // tools/call 需要登录身份（防御层要求 AgentUserContext 有值）
+        AgentUserContext.set(1L);
         readTool = mock(Tool.class);
         when(readTool.name()).thenReturn("query_product_stock");
         when(readTool.description()).thenReturn("查询商品库存");
@@ -45,6 +50,11 @@ class McpControllerTest {
         when(gate.reason(any())).thenReturn("写操作被拦截：需要人工确认后才能执行（订单 2026）。");
 
         controller = new McpController(List.of(readTool, writeTool), gate);
+    }
+
+    @AfterEach
+    void tearDown() {
+        AgentUserContext.clear();
     }
 
     @Test
@@ -130,6 +140,20 @@ class McpControllerTest {
         assertThat(result).doesNotContainKey("isError");
         assertThat(String.valueOf(result.get("content"))).contains("库存 88 件");
         verify(readTool).run(Map.of("productId", 1));
+    }
+
+    @Test
+    void tools_call_未登录_返回未登录错误() {
+        AgentUserContext.clear();
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(Map.of(
+                "jsonrpc", "2.0", "id", 3, "method", "tools/call",
+                "params", Map.of("name", "query_product_stock", "arguments", Map.of("productId", 1))));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> error = (Map<String, Object>) resp.getBody().get("error");
+        assertThat(error.get("code")).isEqualTo(-32001);
+        assertThat(String.valueOf(error.get("message"))).contains("未登录");
+        // 没身份绝不执行工具：连只读工具也不行（否则匿名能查订单）
+        verify(readTool, never()).run(any());
     }
 
     @Test

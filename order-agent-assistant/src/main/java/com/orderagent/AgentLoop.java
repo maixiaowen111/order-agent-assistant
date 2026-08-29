@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * 核心：一圈一圈跑。模型是唯一决策点，harness 只负责执行和搬运。
+ * 核心：一圈一圈跑。模型负责决策（选工具、给最终答案），harness 负责执行和搬运。
  * 多轮：按 sessionId 记住每个会话的完整消息历史（存 Redis，见 RedisSessionStore），下次接着聊。
  *
  * 刹车：max-steps。每次模型调用、每次工具执行都算一步，超过上限立即停止，
@@ -45,8 +45,10 @@ public class AgentLoop {
     }
 
     public String chat(String sessionId, Long userId, String userInput) {
-        // 从存储取这个会话的历史（没有就新建，自带系统提示词），再追加本轮提问
-        List<Message> messages = store.getOrCreate(sessionId);
+        // 从存储取这个会话的快照（历史 + 版本号；没有就新建，自带系统提示词），再追加本轮提问。
+        // 版本号拿来做乐观锁：保存时版本没被别人改掉才落盘，防止两个请求同时写互相覆盖。
+        SessionSnapshot snapshot = store.getOrCreate(sessionId);
+        List<Message> messages = snapshot.messages();
         messages.add(Message.user(userInput));
 
         // 一次执行的上下文：sessionId / 提问 / 开始时间 / 步数都装在里面，日志统一取数
@@ -102,8 +104,12 @@ public class AgentLoop {
             }
         }
 
-        // 一次对话结束，把完整历史写回存储，下次接着聊
-        store.save(sessionId, messages);
+        // 一次对话结束，把完整历史写回存储（乐观锁：版本没被别人改掉才落盘）。
+        // 保存失败说明有另一个请求抢先改了同一会话——宁可本次回答不落盘，也不覆盖对方的历史（丢消息）。
+        if (!store.saveIfUnchanged(sessionId, messages, snapshot.version())) {
+            log.warn("会话保存冲突：有并发请求同时改了该会话，本次不保存以免覆盖。sessionId={}", sessionId);
+            return "您的请求和另一个同时进行的请求冲突了，为避免聊天记录互相覆盖，本次回答未保存，请稍后重试。";
+        }
         log.info("请求结束 sessionId={} elapsedMs={} finalStatus={}",
                 ctx.sessionId(), ctx.elapsedMs(), finalStatus);
         return answer;
@@ -121,9 +127,17 @@ public class AgentLoop {
      *  消息不点名具体工具：可能是取消、也可能是改地址，模型知道自己刚才在做什么，
      *  让它"调用对应的工具"即可覆盖所有写操作。 */
     public void markApproved(String sessionId) {
-        List<Message> messages = store.getOrCreate(sessionId);
-        messages.add(Message.user("【人工已确认】我已批准你刚才要执行的写操作，请立即调用对应的工具完成它，不要再提示需要人工确认。"));
-        store.save(sessionId, messages);
+        // 乐观锁 + 重试：正常一次就成功；版本冲突说明有并发请求抢先改了会话，重读最新历史再注入。
+        // 最多重试 3 次仍失败 → 放弃（比覆盖别人的历史好，宁可让用户再点一次批准）。
+        for (int attempt = 0; attempt < 3; attempt++) {
+            SessionSnapshot snapshot = store.getOrCreate(sessionId);
+            List<Message> messages = snapshot.messages();
+            messages.add(Message.user("【人工已确认】我已批准你刚才要执行的写操作，请立即调用对应的工具完成它，不要再提示需要人工确认。"));
+            if (store.saveIfUnchanged(sessionId, messages, snapshot.version())) {
+                return;
+            }
+        }
+        log.warn("注入「已批准」消息失败：会话持续被并发修改。sessionId={}", sessionId);
     }
 
     private String executeTool(ToolCall call, String sessionId, Long userId) {

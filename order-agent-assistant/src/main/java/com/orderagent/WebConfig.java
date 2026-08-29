@@ -12,7 +12,9 @@ import java.util.List;
  * ① CORS：只给 /mcp 开跨域（MCP Inspector 是浏览器应用会跨域；Claude Desktop / Cursor
  *    是 Electron，本身不强制 CORS）。允许的来源从配置读（agent.cors.allowed-origins），
  *    生产按需收紧，别用 * 全放。
- * ② 登录校验：/query、/approve 必须先登录（校验 order-system 签发的 JWT），见 AgentAuthInterceptor。
+ * ② 登录校验：/query、/approve、/mcp 必须先登录（校验 order-system 签发的 JWT），见 AgentAuthInterceptor。
+ *    /mcp 也要登录：query_order 读的是订单数据，不能匿名查别人的订单；MCP 客户端在配置里
+ *    带 Authorization: Bearer <token> 即可（Claude Desktop / Cursor 的 headers 字段）。
  */
 @Configuration
 public class WebConfig implements WebMvcConfigurer {
@@ -37,6 +39,6 @@ public class WebConfig implements WebMvcConfigurer {
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
-                .addPathPatterns("/query", "/approve");
+                .addPathPatterns("/query", "/approve", "/mcp");
     }
 }

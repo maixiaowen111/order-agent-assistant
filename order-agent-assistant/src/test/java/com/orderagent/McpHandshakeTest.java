@@ -1,5 +1,6 @@
 package com.orderagent;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -21,6 +22,7 @@ import static org.mockito.Mockito.when;
  *
  * 注册 4 个工具镜像真实应用：2 个只读（query_product_stock / query_order）
  * + 2 个写（update_order_address / cancel_order）。
+ * 整个 /mcp 都要登录：AgentUserContext 里先放好身份，模拟拦截器已从 Bearer JWT 解析出 userId。
  */
 class McpHandshakeTest {
 
@@ -33,6 +35,9 @@ class McpHandshakeTest {
 
     @BeforeEach
     void setUp() {
+        // /mcp 已加登录要求：拦截器从 Bearer JWT 解析出 userId 放进 AgentUserContext，
+        // 这里预置身份，等价于真实请求过了一遍 AgentAuthInterceptor。
+        AgentUserContext.set(1L);
         queryStock = tool("query_product_stock", "查询商品库存", true);
         queryOrder = tool("query_order", "查询订单与收货信息", true);
         updateAddress = tool("update_order_address", "修改订单收货地址", false);
@@ -43,6 +48,11 @@ class McpHandshakeTest {
         when(gate.reason(any())).thenReturn("写操作被拦截：需要人工确认后才能执行。");
 
         controller = new McpController(List.of(queryStock, queryOrder, updateAddress, cancelOrder), gate);
+    }
+
+    @AfterEach
+    void tearDown() {
+        AgentUserContext.clear();
     }
 
     private static Tool tool(String name, String desc, boolean readOnly) {

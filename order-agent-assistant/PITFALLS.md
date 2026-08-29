@@ -128,7 +128,7 @@ REDISSON_ADDRESS: redis://redis:6379
 **修复**（README 里记录了可复用写法）：
 ```bash
 Q=$(cat query.txt)   # 中文存 UTF-8 文件
-curl -G localhost:8081/query --data-urlencode "q=$Q" --data-urlencode "sessionId=demo"
+curl -G localhost:8081/query -H "Authorization: Bearer $TOKEN" --data-urlencode "q=$Q" --data-urlencode "sessionId=demo"
 ```
 注意 `--data-urlencode "q@file"` 在这种 curl 上不可用，别用那个写法。
 

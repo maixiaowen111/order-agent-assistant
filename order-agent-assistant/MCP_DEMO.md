@@ -8,17 +8,27 @@ agent 是一个**标准 MCP server**（`POST /mcp`，Streamable HTTP transport�
 
 1. 两个服务都起：order-system（:8080）+ agent（:8081），Redis 在，`DEEPSEEK_API_KEY` 配到 `.env`（快速开始见根目录 README）
 2. agent 端口确认是 8081（`application.yml` 默认即 8081）
+3. **先拿登录 token**：`/mcp` 和 `/query` 一样强制登录（`Authorization: Bearer <order-system JWT>`）。在 order-system 注册/登录拿 token：
+   ```bash
+   curl -X POST localhost:8080/api/user/register -H "Content-Type: application/json" \
+     -d '{"username":"demo","password":"123456","phone":"13800138000"}'
+   curl -X POST localhost:8080/api/user/login -H "Content-Type: application/json" \
+     -d '{"username":"demo","password":"123456"}'    # 返回里的 token 存成 $TOKEN
+   ```
 
 ## 方式一：Claude Desktop
 
-Windows 配置文件在 `%APPDATA%\Claude\claude_desktop_config.json`，加一个 http 类型的 server：
+Windows 配置文件在 `%APPDATA%\Claude\claude_desktop_config.json`，加一个 http 类型的 server，**headers 里带上登录 token**（不带会握手 401）：
 
 ```json
 {
   "mcpServers": {
     "order-agent": {
       "type": "http",
-      "url": "http://localhost:8081/mcp"
+      "url": "http://localhost:8081/mcp",
+      "headers": {
+        "Authorization": "Bearer 你的token"
+      }
     }
   }
 }
@@ -31,6 +41,7 @@ Windows 配置文件在 `%APPDATA%\Claude\claude_desktop_config.json`，加一�
 Settings → MCP Servers → `+ Add`：
 - Type：`http`
 - URL：`http://localhost:8081/mcp`
+- Headers：`{"Authorization": "Bearer 你的token"}`
 
 加完在 MCP 面板能看到 4 个工具及参数 schema，Agent 模式里让模型「查一下库存」就会触发。
 
@@ -42,7 +53,7 @@ Settings → MCP Servers → `+ Add`：
 npx @modelcontextprotocol/inspector
 ```
 
-打开后把 URL 填 `http://localhost:8081/mcp` 连接（Inspector 是浏览器应用，所以 `WebConfig` 给 `/mcp` 开了 CORS）。适合给面试官演示「协议报文长什么样」。
+打开后把 URL 填 `http://localhost:8081/mcp`，**Headers 填 `Authorization: Bearer 你的token`** 再连接（Inspector 是浏览器应用，所以 `WebConfig` 给 `/mcp` 开了 CORS）。适合给面试官演示「协议报文长什么样」。
 
 ## 试什么
 
@@ -53,9 +64,10 @@ npx @modelcontextprotocol/inspector
 **写操作（演示批准闭环）：**
 1. 让模型「把订单 2026... 的地址改成 上海市浦东新区」
 2. 模型调 `update_order_address` → 被闸门拦 → 返回 `isError:true`「需要人工确认后才能执行」，客户端里模型会转述这句话
-3. 打开浏览器（或 curl）批准：
+3. 打开浏览器（或 curl）批准（`/approve` 也要登录凭证，sessionId 放 body）：
    ```bash
-   curl -X POST "http://localhost:8081/approve?sessionId=你的会话id"
+   curl -X POST "http://localhost:8081/approve" -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" -d '{"sessionId":"你的会话id"}'
    ```
    （前端聊天面板会直接弹「批准执行」按钮，点了就走同一条链路）
 4. 再让模型重试 → 这次真正改成功
@@ -73,6 +85,6 @@ npx @modelcontextprotocol/inspector
 
 ## 常见问题
 
-- **客户端连不上 / 握手失败**：确认 agent 起着、URL 没拼错（`http://localhost:8081/mcp`，不是 8080）；看 agent 日志有没有请求进来
+- **客户端连不上 / 握手 401**：确认 agent 起着、URL 没拼错（`http://localhost:8081/mcp`，不是 8080）；**`/mcp` 要登录**——headers 里 `Authorization: Bearer <token>` 是否填了、token 是不是刚从 order-system 登录拿的（过期/不对会 401）；看 agent 日志有没有请求进来
 - **写操作永远成功不了**：批准是 per-session 的，浏览器 `POST /approve` 时 sessionId 要和客户端会话对应；批准后**重新让模型执行**那一步（不是客户端自动重试）
 - **想改端口**：`application.yml` 的 `server.port`，Claude Desktop 配置里的 URL 同步改

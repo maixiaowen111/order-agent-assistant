@@ -24,6 +24,13 @@ import java.util.Map;
  *      这里把它透传过来，order-system 据此校验订单归属（X-Internal-Key 只能证明"是 agent 在调"，
  *      不能当用户身份）。
  * 业务规则全部复用 OrderService，保证 agent 和前端看到的行为一致。
+ *
+ * 信任模型与边界（别把这层当成无敌的隔离）：
+ *   - X-Internal-Key 只证明"是 agent 在调"（服务身份），X-User-Id 才是"谁在操作"，
+ *     读写都要带并校验订单归属（见下方 requireUser / OrderService 的归属校验）。
+ *   - 但这层不是防敌对的强隔离：任何拿到内部密钥、能直连本服务的进程都能冒用 X-User-Id。
+ *     真正的隔离靠部署——/internal/** 只暴露在内网/服务网格内，公网防火墙不放行；
+ *     生产建议升级为内部签名 Token 或 mTLS（当前版本未做，见 README「安全边界」）。
  */
 @RestController
 @RequestMapping("/internal/order")
@@ -40,8 +47,9 @@ public class InternalOrderController {
                                         @RequestHeader(value = "X-Internal-Key", required = false) String key,
                                         @RequestHeader(value = "X-User-Id", required = false) Long userId) {
         checkKey(key);
-        // 读路径：带了用户就校验归属（web 路径必带）；不带则放行（MCP 只读开发路径，
-        // 数据已脱敏 + 有 X-Internal-Key 兜底）。写操作不允许这样，见下面两个方法。
+        // 读路径同样要求用户身份：X-Internal-Key 只证明"是 agent 在调"，不能证明"在查谁的订单"。
+        // 没有 X-User-Id 就不放行——否则任何能拿到内部密钥的进程都能匿名读任意订单。
+        requireUser(userId);
         return Result.success(orderService.getByOrderNo(orderNo, userId));
     }
 

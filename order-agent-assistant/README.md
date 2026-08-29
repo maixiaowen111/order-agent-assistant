@@ -1,8 +1,8 @@
 # Order Agent Assistant
 
-一个 **AI Agent 管理订单** 的可运行项目：用户用自然语言查单、查商品库存、改收货地址、取消订单；取消已支付订单会自动触发退款，并在通知中心生成一条真实的退款通知。
+一个 **AI Agent 管理订单** 的可运行项目：用户用自然语言查单、查商品库存、改收货地址、取消订单；取消已支付订单会自动触发退款事件，并在通知中心生成一条退款通知（支付/退款是状态模拟 + 事件通知，不接真实支付通道）。
 
-- **决策层**（`order-agent-assistant`）：Agent 循环 + 权限闸门 + 多轮记忆 + 工具调用。模型是唯一决策点，代码只负责执行和搬运。
+- **决策层**（`order-agent-assistant`）：Agent 循环 + 权限闸门 + 多轮记忆 + 工具调用。模型负责决策（选工具、给最终答案），代码负责执行和搬运。
 - **执行层**（`order-system`）：订单业务 + Transactional Outbox（事务性发件箱）+ 通知中心。业务规则只留一份，agent 不直连数据库。
 - **前端**（`frontend/`）：Vue 3 + Vite 精致单页——完整电商体验 + 右下角 AI 聊天面板；取消订单时聊天里弹出「批准执行」按钮，一键走完「确认 → 执行 → 订单刷新 → 退款通知」闭环。
 - **端到端验证通过**：真实 DeepSeek 模型跑通「查单（含收货地址）→ 查商品库存 → 取消/改地址被拦截 → 人工批准 → 真正执行 → 退款事件（取消）→ 通知落库」。
@@ -92,7 +92,7 @@ curl -X POST "http://localhost:8081/query" -H "Authorization: Bearer $TOKEN" -H 
 > 前置：宿主机需要 `DEEPSEEK_API_KEY`（.env 注入，不写死在镜像里）；`mysql`/`redis` 容器**不占用宿主机端口**，避免和你本机已有的 3306/6379 冲突。
 >
 > Windows Git Bash 注意：中文参数直接写命令行会按 GBK 编码传过去导致乱码。实测可用的做法：把查询语句存成 UTF-8 文件，再读进变量传给 curl，例如
-> `Q=$(cat query.txt); curl -G localhost:8081/query --data-urlencode "q=$Q" --data-urlencode "sessionId=demo"`。
+> `Q=$(cat query.txt); curl -G localhost:8081/query -H "Authorization: Bearer $TOKEN" --data-urlencode "q=$Q" --data-urlencode "sessionId=demo"`。
 > 注意 `--data-urlencode "q@file"` 在这种 curl 上不可用，别用那个写法。
 
 ### 方式二：手动起（本地开发）
@@ -143,7 +143,7 @@ curl "localhost:8080/api/notification/my" -H "Authorization: Bearer $TOKEN"
 
 ## MCP 兼容层
 
-agent 还是一个**标准 MCP server**：任何 MCP 客户端（Claude Desktop、Cursor、其他 AI IDE）连上 `http://localhost:8081/mcp` 就能发现并调用我们的工具。走 Streamable HTTP transport，已过**严格客户端握手**（`initialize` 协议版本协商、通知回 202、`McpHandshakeTest` 模拟客户端完整流程），连接演示见 [MCP_DEMO.md](MCP_DEMO.md)。核心协议就三个方法，和 `Tool` 接口一一对应：
+agent 还是一个**标准 MCP server**：任何 MCP 客户端（Claude Desktop、Cursor、其他 AI IDE）连上 `http://localhost:8081/mcp` 就能发现并调用我们的工具。**`/mcp` 和 `/query` 一样要登录**（`Authorization: Bearer <order-system JWT>`，客户端在配置的 headers 里带上），拿 token 方式：先在 order-system 注册/登录（见下面「演示一次完整链路」①）。走 Streamable HTTP transport，已过**严格客户端握手**（`initialize` 协议版本协商、通知回 202、`McpHandshakeTest` 模拟客户端完整流程），连接演示见 [MCP_DEMO.md](MCP_DEMO.md)。核心协议就三个方法，和 `Tool` 接口一一对应：
 
 | MCP 方法 | 作用 | 对应 Tool 接口 |
 |---|---|---|
@@ -152,23 +152,28 @@ agent 还是一个**标准 MCP server**：任何 MCP 客户端（Claude Desktop�
 | `tools/call` | 调用工具 | `run(args)` |
 
 ```bash
+# 先拿登录 token（order-system 注册/登录），后面所有 MCP 调用都带它
+TOKEN=$(curl -s -X POST localhost:8080/api/user/login -H "Content-Type: application/json" \
+  -d '{"username":"demo","password":"123456"}' | grep -oE '"token":"?[^",}]*' | sed 's/"token":"\?//')
+
 # ① 握手
-curl -X POST "localhost:8081/mcp" -H "Content-Type: application/json" \
+curl -X POST "localhost:8081/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 
 # ② 发现工具（应看到 query_order / query_product_stock / cancel_order / update_order_address）
-curl -X POST "localhost:8081/mcp" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+curl -X POST "localhost:8081/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 
 # ③ 只读工具直接执行
-curl -X POST "localhost:8081/mcp" -H "Content-Type: application/json" \
+curl -X POST "localhost:8081/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_product_stock","arguments":{"productId":1}}}'
 
 # ④ 写工具被闸门拦（isError:true，不执行）
-curl -X POST "localhost:8081/mcp" -H "Content-Type: application/json" \
+curl -X POST "localhost:8081/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"cancel_order","arguments":{"orderNo":"<orderNo>"}}}'
 ```
 
-**为什么手写、不引 MCP Java SDK**：协议核心就一个 POST 端点 + JSON-RPC 三种方法，自己实现看得见本质、零依赖，面试能讲「懂协议而不只是加依赖」；transport 已按 Streamable HTTP 规范加固（通知 202、`initialize` 版本协商），严格客户端能直接连。**安全边界**：`tools/list` 列出全部工具（含写操作），但 `tools/call` 里写工具**同样走权限闸门**，MCP 层不能绕过人工批准去改数据。真实部署时建议在网关上再加一层鉴权（本实现面向演示，工具本身只读公开、写被闸门挡）。
+**为什么手写、不引 MCP Java SDK**：协议核心就一个 POST 端点 + JSON-RPC 三种方法，自己实现看得见本质、零依赖，面试能讲「懂协议而不只是加依赖」；transport 已按 Streamable HTTP 规范加固（通知 202、`initialize` 版本协商），严格客户端能直接连。**安全边界**：整个 `/mcp` 都要登录（`Authorization: Bearer <order-system JWT>`，Claude Desktop / Cursor 在配置的 headers 字段里带上）——查订单含收货信息，绝不能匿名；`tools/list` 列出全部工具（含写操作），但 `tools/call` 里写工具**同样走权限闸门**，MCP 层不能绕过人工批准去改数据。
 
 ## 前端（Vue 3 + Vite，精致单页）
 
@@ -221,18 +226,18 @@ Vite 代理已配好：`/api`→8080、`/query`+`/approve`→8081，同样无跨
 ## 测试
 
 ```bash
-cd order-agent-assistant && mvn test    # 114 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / 异常 / 脱敏 / MCP 握手
-cd order-system && mvn test             # 36 个用例：取消状态机 / 通知中心 / 脱敏 / 商品图片
+cd order-agent-assistant && mvn test    # 146 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / 限流 / 请求体上限 / 异常 / 脱敏 / MCP 握手
+cd order-system && mvn test             # 49 个用例：取消状态机 / 通知中心 / 脱敏 / 商品图片 / 订单归属 / 事件重试
 ```
 
-不依赖中间件，纯 Mockito 单元测试，任何机器都能跑绿。
+不依赖中间件，纯 Mockito 单元测试，任何机器都能跑绿。跨服务的协作问题（密钥配对 / 脱敏 / 写闸门）由端到端冒烟脚本 `scripts/smoke.sh` 覆盖（起真 MySQL/Redis + 两个后端）。
 
 ## 目录结构
 
 ```
 order-agent-assistant/     # 决策层（本仓库）
   src/main/java/com/orderagent/
-    AgentLoop.java         核心循环（模型=决策点，harness=执行）
+    AgentLoop.java         核心循环（模型=决策者，harness=执行）
     Tool / ToolCall        工具抽象（MCP 模型）
     PermissionGate / ToolProposalGate  权限闸门（只读放行/写操作要批准）
     McpController          MCP 兼容层（POST /mcp：initialize / tools/list / tools/call）
@@ -240,7 +245,8 @@ order-agent-assistant/     # 决策层（本仓库）
     PersistedMessage       消息序列化中间格式（解决 Jackson 多态）
     DeepSeekLlmClient      LLM 通道（OpenAI 兼容 API）
     AgentController        REST 入口（/query、/approve）
-  src/test/java/           单元测试（114 个用例，含 McpHandshakeTest 严格客户端握手模拟）
+    langchain4j/           并行接入实验模块（用 LangChain4j 框架接入 DeepSeek 的探索：意图识别、写工具提议闸门、Demo）
+  src/test/java/           单元测试（146 个用例，含 McpHandshakeTest 严格客户端握手模拟）
   Dockerfile / docker-compose.yml / .env.example
 
 order-system/              # 执行层（同级目录）

@@ -10,6 +10,10 @@
 # MCP 的 tools/call 直接执行工具，绕开模型——所以 DEEPSEEK_API_KEY 填占位符
 # dummy-smoke-key 也能跑，且不花钱、不依赖外网。
 #
+# 鉴权：/mcp 和 /query 一样强制登录（Authorization: Bearer <order-system JWT>，
+# 见 WebConfig 的 AgentAuthInterceptor）。所以先注册/登录一个冒烟用户拿 token，
+# 后续所有 MCP 调用都带它——也顺带验证了「MCP 通道也走登录」这条安全边界。
+#
 # 用法：
 #   bash scripts/smoke.sh          # 需要本机 Docker 在运行
 #   全部绿会打印 ✓；任何一步失败打印 ✗ 并退出非零，容器自动清理。
@@ -49,14 +53,14 @@ wait_for() {
   done
 }
 
-mcp_call() { # $1=request-id $2=方法 $3=params JSON（可空）
+mcp_call() { # $1=request-id $2=方法 $3=params JSON（可空）；MCP 带登录 token（/mcp 强制 Bearer）
   local body
   if [ -n "${3:-}" ]; then
     body="{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"$2\",\"params\":$3}"
   else
     body="{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"$2\"}"
   fi
-  curl -s -X POST "$AGENT/mcp" -H "Content-Type: application/json" -d "$body"
+  curl -s -X POST "$AGENT/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "$body"
 }
 
 # 从 JSON 里抓第一个字段值（jq 在 Windows Git Bash 不保证有，用 grep/sed 免依赖）
@@ -80,12 +84,24 @@ DEEPSEEK_API_KEY=dummy-smoke-key "${COMPOSE[@]}" up -d --build --wait --wait-tim
   mysql redis order-system agent
 trap 'printf "\n清理：停容器\n"; "${COMPOSE[@]}" down >/dev/null 2>&1 || true' EXIT
 
-step "1 等服务就绪"
+step "1 等服务就绪（先 order-system，再注册拿 token，最后带 token 等 agent）"
 wait_for "order-system" 120 "$OS/api/product/page"
-wait_for "agent(MCP)" 120 -X POST "$AGENT/mcp" -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":0,"method":"ping"}'
 
-step "2 MCP 握手（initialize：协议版本协商 + 服务身份）"
+step "1.5 注册/登录一个冒烟用户，拿 token（/mcp 和 /query 一样要登录）"
+UNAME="smoke$(date +%s)"
+REG=$(curl -s -X POST "$OS/api/user/register" -H "Content-Type: application/json" \
+  -d "{\"username\":\"$UNAME\",\"password\":\"smoke123\",\"phone\":\"13800138000\"}")
+assert_contains "$REG" '"code":200' "注册冒烟用户 $UNAME"
+TOKEN=$(curl -s -X POST "$OS/api/user/login" -H "Content-Type: application/json" \
+  -d "{\"username\":\"$UNAME\",\"password\":\"smoke123\"}" | json_get token)
+[ -n "$TOKEN" ] || fail "登录没拿到 token"
+ok "登录拿到 token（冒烟用户 $UNAME）"
+
+# agent 的 /mcp 无 token 一律 401（AgentAuthInterceptor），所以就绪探测也带 token
+wait_for "agent(MCP)" 120 -X POST "$AGENT/mcp" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":0,"method":"ping"}'
+
+step "2 MCP 握手（initialize：协议版本协商 + 服务身份，带登录凭证）"
 HANDSHAKE=$(mcp_call 1 initialize '{"protocolVersion":"2025-06-18"}')
 assert_contains "$HANDSHAKE" '"name":"order-agent"'   "initialize 回 serverInfo.name=order-agent"
 assert_contains "$HANDSHAKE" '"protocolVersion":"2025-06-18"' "协议版本回声 2025-06-18"
@@ -100,18 +116,8 @@ step "4 只读工具直接执行（X-Internal-Key 配对 + 真实 MySQL 查询�
 STOCK=$(mcp_call 3 "tools/call" '{"name":"query_product_stock","arguments":{"productId":1}}')
 assert_contains "$STOCK" 'iPhone 15 Ultra' "查库存回真实商品名（内部密钥配对成功）"
 
-# —— 造一单全新的，不依赖种子数据状态（种子订单可能被之前演示改过）——
-step "5 造一单全新的（注册 → 加购 → 下单 → 支付）"
-UNAME="smoke$(date +%s)"
-REG=$(curl -s -X POST "$OS/api/user/register" -H "Content-Type: application/json" \
-  -d "{\"username\":\"$UNAME\",\"password\":\"smoke123\",\"phone\":\"13800138000\"}")
-assert_contains "$REG" '"code":200' "注册成功"
-
-TOKEN=$(curl -s -X POST "$OS/api/user/login" -H "Content-Type: application/json" \
-  -d "{\"username\":\"$UNAME\",\"password\":\"smoke123\"}" | json_get token)
-[ -n "$TOKEN" ] || fail "登录没拿到 token"
-ok "登录拿到 token"
-
+# —— 用步骤 1.5 的冒烟用户造一单全新的，不依赖种子数据状态 ——
+step "5 造一单全新的（加购 → 下单 → 支付）"
 curl -s -X POST "$OS/api/cart" -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{"productId":1,"quantity":1}' \
   | grep -q '"code":200' || fail "加购失败"

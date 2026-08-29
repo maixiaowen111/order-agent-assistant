@@ -33,8 +33,10 @@ public class RedisPendingStore implements PendingStore {
 
     @Override
     public Pending take(Long userId, String sessionId) {
-        String raw = redis.opsForValue().get(key(userId, sessionId));
-        redis.delete(key(userId, sessionId));
+        // GETDEL 原子"读取并删除"：两个 /approve 并发抢同一提议时，只有第一个能拿到值，
+        // 第二个拿到 null——同一提议不会被批准两次。
+        // 若用 GET → DELETE 两步，两个请求可能都读到同一条提议、批准两次（竞态窗口）。
+        String raw = redis.opsForValue().getAndDelete(key(userId, sessionId));
         if (raw == null) {
             return null;
         }

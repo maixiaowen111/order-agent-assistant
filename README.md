@@ -1,8 +1,8 @@
 # Order Agent Assistant
 
-一个 **AI Agent 管理订单** 的可运行作品：用自然语言让 AI 帮你查单、查商品库存、改收货地址、取消订单；取消已支付的订单会自动触发退款，并在通知中心生成一条真实的退款通知。前端、决策层、执行层三层齐全，Docker 一键起，clone 下来就能跑。
+一个 **AI Agent 管理订单** 的可运行作品：用自然语言让 AI 帮你查单、查商品库存、改收货地址、取消订单；取消已支付的订单会自动触发退款事件，并在通知中心生成一条退款通知（支付/退款是**状态模拟 + 事件通知**，不接真实支付通道——和 [order-system/README.md](order-system/README.md)「支付/退款如实描述」一致）。前端、决策层、执行层三层齐全，Docker 一键起，clone 下来就能跑。
 
-- 🤖 **AI 决策层** `order-agent-assistant`：Agent 循环 + 权限闸门（写操作要人工批准）+ Redis 多轮记忆 + DeepSeek 工具调用 + **MCP 兼容层**（`POST /mcp`，Streamable HTTP transport，已过严格客户端握手，Claude Desktop / Cursor 可直接连接调用工具，演示见 [MCP_DEMO.md](order-agent-assistant/MCP_DEMO.md)）。模型是唯一决策点，代码只负责执行和搬运。
+- 🤖 **AI 决策层** `order-agent-assistant`：Agent 循环 + 权限闸门（写操作要人工批准）+ Redis 多轮记忆 + DeepSeek 工具调用 + **MCP 兼容层**（`POST /mcp`，Streamable HTTP transport，已过严格客户端握手，Claude Desktop / Cursor 可直接连接调用工具，演示见 [MCP_DEMO.md](order-agent-assistant/MCP_DEMO.md)）。模型负责决策（选工具、给最终答案），代码负责执行和搬运。
 - ⚙️ **业务执行层** `order-system`：订单状态机 + Transactional Outbox（取消+退款同事务落库）+ 通知中心 + 管理员商品管理（含**商品图片上传**：扩展名/魔数校验 + UUID 文件名 + 静态映射，换图自动删旧图防磁盘孤儿）。业务规则只留一份，agent 不直连数据库。
 - 🖥️ **前端** `frontend/`：Vue 3 精致单页——完整电商体验 + 右下角 AI 聊天面板；取消订单时聊天气泡弹出「批准执行」按钮，一键走完「确认 → 执行 → 订单刷新 → 退款通知」闭环。
 - 📦 **一键部署**：Docker Compose 起全套（MySQL + Redis + 两个后端 + 前端），浏览器只访问一个源，无跨域。
@@ -16,7 +16,7 @@
                ▼                                        ▼
 ┌──────────────────────────────┐      ┌───────────────────────────────┐
 │  order-system  业务执行层 8080 │      │  order-agent-assistant 决策层 │
-│  · 订单状态机（幂等取消）       │◄────►│  8081  AgentLoop: 模型=决策点  │
+│  · 订单状态机（幂等取消）       │◄────►│  8081  AgentLoop: 模型=决策者  │
 │  · Transactional Outbox       │HTTP  │  · 权限闸门：写操作人工批准     │
 │  · 通知中心（退款通知）         │内部  │  · Redis 多轮记忆（TTL 30min） │
 │  · 管理员商品管理              │密钥  │  · DeepSeek 工具调用           │
@@ -97,12 +97,16 @@ docker compose up -d --build
 
 ## 测试
 
-```bash
-cd order-system && mvn test          # 45 个用例：状态机/通知中心/脱敏/商品图片/订单归属校验
-cd order-agent-assistant && mvn test  # 114 个用例：AgentLoop/闸门/会话存储/工具/异常/脱敏/MCP 握手
-```
+分三层，越往下越接近真环境：
 
-纯 Mockito 单元测试，不依赖中间件，任何机器都能跑绿。
+- **单元测试（主）**：纯 Mockito，不依赖中间件，任何机器（含 CI 空机器）都能跑绿。
+  ```bash
+  cd order-system && mvn test           # 49 个用例：状态机/通知中心/脱敏/商品图片/订单归属/事件重试
+  cd order-agent-assistant && mvn test  # 146 个用例：AgentLoop/闸门/会话存储/工具/限流/请求体上限/脱敏/MCP 握手
+  ```
+  Redis、Feign、消息队列这些外部依赖在单测里全部用 mock 替身——保证测试可移植、不依赖环境，也逼着业务代码面向接口。
+- **端到端冒烟（scripts/smoke.sh）**：起真 MySQL/Redis + 两个后端，验证单测隔离中间件测不到的协作问题（内部密钥配对 / 收货信息脱敏 / 写操作闸门）。本地 `bash scripts/smoke.sh` 也能跑。
+- **集成边界**：跨服务的一致性逻辑（Feign 超时补偿、库存并发防超卖、Outbox 调度器补发）在 `order-system-cloud` 独立仓库里用 mock 边界的单元测试覆盖（47 个用例），见该仓库 README。
 
 **CI（GitHub Actions）**：`.github/workflows/ci.yml` —— 每次 push / 开 PR 自动跑三个并行任务（order-system 测试、agent 测试、前端生产构建），全绿后再跑**端到端冒烟**（`scripts/smoke.sh`：起真 MySQL/Redis + 两个后端，验证内部密钥配对 / 收货信息脱敏 / 写操作闸门——单测隔离中间件测不到的协作问题，本地 `bash scripts/smoke.sh` 也能跑）。因为测试不依赖中间件，前三个任务 CI 空机器直接跑绿。把代码推到 GitHub 后，Actions 页就能看到第一次跑的结果。
 
@@ -113,9 +117,12 @@ order-agent-assistant/   # AI 决策层 + 前端 + 部署编排
   src/main/java/com/orderagent/   AgentLoop / Tool / WritePermissionGate / RedisSessionStore
   frontend/                       Vue3 电商 + AI 聊天面板
   Dockerfile / docker-compose.yml / .env.example
-order-system/            # 业务执行层
+order-system/            # 业务执行层（agent 对话的就是它，主链路；独立单体仓库
+                         # github.com/maixiaowen111/order-system 是它的早期版本，已并入本仓库）
   OrderServiceImpl        取消状态机 + 恢复库存 + 插退款事件（Outbox）
   Notification*           通知中心
   config/AdminBootstrapRunner  管理员账号启动引导（幂等）
+order-system-cloud/      # 独立微服务仓库（同源业务拆微服务演进：order/stock/product/user + gateway）
+                         # 不在 agent 主链路里，是另一条学习/演进线，见其独立 README
 sql/                     # 建库基线 + 迁移脚本
 ```

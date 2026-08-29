@@ -30,4 +30,14 @@ public class InMemoryApprovalStore implements WriteApprovalStore {
     public void consume(Long userId, String sessionId, String toolName) {
         data.remove(key(userId, sessionId, toolName));
     }
+
+    @Override
+    public boolean claim(Long userId, String sessionId, String toolName, String expectedFingerprint) {
+        if (expectedFingerprint == null) {
+            return false;
+        }
+        // ConcurrentHashMap.remove(key, value) 原子：仅当 key 当前映射到该值才删除——
+        // 与 Redis Lua 的"读+比对+删"语义等价，两个并发 claim 只有一个能成功。
+        return data.remove(key(userId, sessionId, toolName), expectedFingerprint);
+    }
 }

@@ -4,6 +4,13 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -93,5 +100,40 @@ class WritePermissionGateTest {
     @Test
     void 拦截原因包含订单号和人工确认字样() {
         assertThat(gate.reason(cancel("A123"))).contains("A123").contains("人工确认");
+    }
+
+    @Test
+    void 并发执行同一批准_只有一个请求能抢到() throws Exception {
+        // 预置一个批准凭证：人工批准「取消订单 A」
+        assertThat(gate.blocks(cancel("A"), "s1", 1L)).isTrue();
+        gate.approve(1L, "s1");
+
+        // 两个线程同时发起同一个已批准的写调用（同用户/会话/参数）——模拟两个请求并发抢同一份批准。
+        // blocks() 用原子 claim（读+比对+删一步），只有拿到并删掉凭证的请求放行，另一个被拦。
+        int threads = 2;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CyclicBarrier barrier = new CyclicBarrier(threads);
+        CountDownLatch done = new CountDownLatch(threads);
+        AtomicInteger passed = new AtomicInteger();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        for (int i = 0; i < threads; i++) {
+            pool.submit(() -> {
+                try {
+                    barrier.await();                     // 对齐到同一瞬间发起
+                    if (!gate.blocks(cancel("A"), "s1", 1L)) {
+                        passed.incrementAndGet();          // 放行 = 抢到了这一份批准
+                    }
+                } catch (Throwable t) {
+                    failure.set(t);
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+        assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
+        pool.shutdownNow();
+
+        assertThat(failure.get()).isNull();
+        assertThat(passed.get()).isEqualTo(1); // 同一批准凭证只放行一个请求，另一个被拦
     }
 }

@@ -5,11 +5,15 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.script.RedisScript;
 
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -59,5 +63,33 @@ class RedisApprovalStoreTest {
         store.consume(1L, "s1", "cancel_order");
 
         verify(redis).delete("agent:approval:1:s1:cancel_order");
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void claim_指纹匹配时执行Lua并返回true() {
+        when(redis.execute(any(RedisScript.class), anyList(), any(Object[].class))).thenReturn(1L);
+
+        assertThat(store.claim(1L, "s1", "cancel_order", "{\"orderNo\":\"A\"}")).isTrue();
+
+        // 确认用的是"读+比对+删"的原子脚本，而不是 GET → DELETE 两步（那有竞态窗口）
+        ArgumentCaptor<RedisScript> captor = ArgumentCaptor.forClass(RedisScript.class);
+        verify(redis).execute(captor.capture(), anyList(), any(Object[].class));
+        assertThat(captor.getValue().getScriptAsString()).contains("GET", "DEL", "ARGV[1]");
+    }
+
+    @Test
+    void claim_指纹不匹配或已被抢_返回false() {
+        when(redis.execute(any(RedisScript.class), anyList(), any(Object[].class))).thenReturn(0L);
+        assertThat(store.claim(1L, "s1", "cancel_order", "{\"orderNo\":\"A\"}")).isFalse();
+
+        when(redis.execute(any(RedisScript.class), anyList(), any(Object[].class))).thenReturn(null);
+        assertThat(store.claim(1L, "s1", "cancel_order", "{\"orderNo\":\"A\"}")).isFalse();
+    }
+
+    @Test
+    void claim_指纹为null_直接失败不碰Redis() {
+        assertThat(store.claim(1L, "s1", "cancel_order", null)).isFalse();
+        verify(redis, never()).execute(any(RedisScript.class), anyList(), any(Object[].class));
     }
 }

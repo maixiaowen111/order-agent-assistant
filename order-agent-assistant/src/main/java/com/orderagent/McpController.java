@@ -25,8 +25,11 @@ import java.util.Map;
  * 为什么手写而不是引 MCP SDK：协议核心就这一个 POST 端点，自己实现看得见本质、
  * 零依赖；将来要接官方 SDK 的 transport，这层业务代码不动。
  *
- * 安全边界：tools/list 列出全部工具（含写操作），但 tools/call 里写工具**同样被
- * 权限闸门拦截**——MCP 层不能绕过人工批准去改数据。
+ * 安全边界：
+ *   ① 整个 /mcp 都要登录（Authorization: Bearer <order-system JWT>，见 WebConfig）——
+ *      读订单数据绝不能匿名；拦截器把 userId 放进 AgentUserContext，调用链据此带 X-User-Id。
+ *   ② tools/list 列出全部工具（含写操作），但 tools/call 里写工具**同样被权限闸门拦截**——
+ *      MCP 层不能绕过人工批准去改数据。
  *
  * 明确不做（规范里对服务器都是可选能力，客户端照常工作）：
  *   会话管理（Mcp-Session-Id 头）——保持无状态；
@@ -81,10 +84,11 @@ public class McpController {
                 "protocolVersion", version,
                 "capabilities", Map.of("tools", Map.of("listChanged", false)),
                 "serverInfo", Map.of("name", "order-agent", "version", "0.0.1"),
-                // 规范允许的 instructions：Claude Desktop 会展示给用户，先把「写要批准」的预期说清楚
-                "instructions", "该 agent 的写操作需要人工批准：模型触发写工具时会被拦下（isError:true）。"
-                        + "批准必须带登录凭证：POST /approve（Authorization: Bearer <token>，body 里带 sessionId），"
-                        + "批准后让模型重试。只读查询无需批准，但 /query 同样要求登录凭证（Bearer）。");
+                // 规范允许的 instructions：Claude Desktop 会展示给用户，先把「鉴权 + 写要批准」说清楚
+                "instructions", "连接本 MCP 服务需要登录：客户端配置里带 Authorization: Bearer <order-system JWT>"
+                        + "（先在 order-system 注册/登录拿 token）。该 agent 的写操作需要人工批准：模型触发写工具时"
+                        + "会被拦下（isError:true）。批准必须带登录凭证：POST /approve（Authorization: Bearer <token>，"
+                        + "body 里带 sessionId），批准后让模型重试。只读查询无需批准，但同样要求登录凭证（Bearer）。");
     }
 
     /** tools/list：把 Tool 接口的 name/description/inputSchema 原样暴露成 MCP 工具。 */
@@ -100,6 +104,13 @@ public class McpController {
 
     /** tools/call：只读工具直接执行；写工具被闸门拦截，绝不执行。 */
     private ResponseEntity<Map<String, Object>> callTool(Object id, Map<String, Object> params) {
+        // 纵深防御：拦截器已保证 /mcp 有 Bearer token，这里再确认用户身份在上下文中。
+        // 工具调用链（OrderSystemApiClient）靠 AgentUserContext 决定带不带 X-User-Id——
+        // 没有它，内部接口查订单会因缺少用户身份被拒。
+        if (AgentUserContext.get() == null) {
+            return ResponseEntity.ok(rpcError(id, -32001, "未登录：/mcp 需要 Authorization: Bearer <JWT>"));
+        }
+
         String name = params.get("name") == null ? "" : String.valueOf(params.get("name"));
         @SuppressWarnings("unchecked")
         Map<String, Object> args = params.get("arguments") instanceof Map<?, ?>
