@@ -33,6 +33,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -75,13 +76,29 @@ public class OrderServiceImpl implements OrderService {
             }
         }
 
-        // 1. 查出要购买的购物车记录 + 逐个校验商品 + 构建订单快照 + 计算总金额。
-        //    这一遍只读不写：商品下架/库存不足在这里快速失败，此刻一个副作用都没有。
-        List<Cart> cartList = cartMapper.selectBatchIds(dto.getCartIds());
-        if (CollectionUtils.isEmpty(cartList)) {
-            throw new BusinessException(400, "购物车记录不存在");
+        // 1. 查出要购买的购物车记录——必须全部属于当前用户。
+        //    cartId 是客户端传入的，不能只 selectBatchIds 查出来就用：那会拿到别人的购物车
+        //    记录来下单、并删掉对方的购物车（越权）。按 userId 过滤后数量对不上
+        //    （有 cartId 不存在或不属于自己）→ 直接 403，绝不拿部分记录继续下单。
+        List<Long> requestedCartIds = dto.getCartIds();
+        long distinctCartCount = requestedCartIds.stream().distinct().count();
+        List<Cart> cartList = cartMapper.selectList(new LambdaQueryWrapper<Cart>()
+                .eq(Cart::getUserId, userId)
+                .in(Cart::getId, requestedCartIds));
+        if (cartList.size() != distinctCartCount) {
+            throw new BusinessException(403, "部分购物车记录不存在或不属于当前用户");
         }
 
+        // 1.1 数量二次校验：不能只依赖加购时的校验（数据可能被绕过/是历史脏数据）。
+        //     尤其防负数进入库存公式 stock - quantity——quantity=-5 会让库存反向 +5。
+        for (Cart cart : cartList) {
+            if (cart.getQuantity() == null || cart.getQuantity() < 1 || cart.getQuantity() > 999) {
+                throw new BusinessException(400, "购物车商品数量非法，请调整后重新下单");
+            }
+        }
+
+        // 2. 逐个校验商品 + 构建订单快照 + 计算总金额。
+        //    这一遍只读不写：商品下架/库存不足在这里快速失败，此刻一个副作用都没有。
         BigDecimal totalAmount = BigDecimal.ZERO;
         List<OrderItem> orderItems = new ArrayList<>();
 
@@ -130,6 +147,8 @@ public class OrderServiceImpl implements OrderService {
             order.setReceiverPhone(dto.getReceiverPhone());
             order.setReceiverAddress(dto.getReceiverAddress());
             order.setClientRequestId(clientRequestId);   // 可为 null（不带幂等键的旧客户端）
+            // 请求指纹：收货信息 + 商品明细落成不可变快照，幂等回放直接比它（不依赖购物车是否还在）
+            order.setRequestFingerprint(buildRequestFingerprint(dto, cartList));
             orderMapper.insert(order);
 
             // 4. 逐个原子扣库存 + 落订单明细。扣减放在订单之后：若原子扣减失败（超卖竞争
@@ -366,10 +385,21 @@ public class OrderServiceImpl implements OrderService {
         compareReceiverField("收货电话", dto.getReceiverPhone(), existing.getReceiverPhone());
         compareReceiverField("收货地址", dto.getReceiverAddress(), existing.getReceiverAddress());
 
+        // 商品内容比对：优先比"创建时保存的请求指纹"——它是不可变快照，不依赖购物车是否还在。
         List<Cart> cartList = cartMapper.selectBatchIds(dto.getCartIds());
         if (CollectionUtils.isEmpty(cartList)) {
             return;   // 合法重试：购物车已删，无法比对商品，收货信息对得上就放行
         }
+        String storedFingerprint = existing.getRequestFingerprint();
+        if (storedFingerprint != null) {
+            // 有指纹：直接比对新请求算出的指纹。同 key 不同商品/数量/收货信息 → 400 参数冲突。
+            if (!buildRequestFingerprint(dto, cartList).equals(storedFingerprint)) {
+                throw new BusinessException(400,
+                        "clientRequestId 已用于不同的下单内容，请更换幂等键或核对参数");
+            }
+            return;
+        }
+        // 老订单（升级前创建）没有指纹：退回按订单明细比对，兼容历史数据。
         LambdaQueryWrapper<OrderItem> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(OrderItem::getOrderId, existing.getId());
         List<OrderItem> existingItems = orderItemMapper.selectList(wrapper);
@@ -379,6 +409,24 @@ public class OrderServiceImpl implements OrderService {
         if (!itemFingerprint(cartList).equals(orderItemsFingerprint(existingItems))) {
             throw new BusinessException(400,
                     "clientRequestId 已用于不同的下单内容（商品不一致），请更换幂等键或核对参数");
+        }
+    }
+
+    /**
+     * 下单请求指纹：收货信息 + 商品明细（productId:quantity 排序拼接）合并成一份 JSON 快照。
+     * 创建订单时落库，幂等回放时直接比对新请求算出的指纹——这份快照在创建时固定，
+     * 不依赖购物车是否还在（下单成功后购物车已被删）。
+     */
+    private String buildRequestFingerprint(CreateOrderDTO dto, List<Cart> cartList) {
+        try {
+            Map<String, Object> fp = new LinkedHashMap<>();
+            fp.put("receiverName", dto.getReceiverName());
+            fp.put("receiverPhone", dto.getReceiverPhone());
+            fp.put("receiverAddress", dto.getReceiverAddress());
+            fp.put("items", itemFingerprint(cartList));
+            return objectMapper.writeValueAsString(fp);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("下单请求指纹序列化失败", e);
         }
     }
 

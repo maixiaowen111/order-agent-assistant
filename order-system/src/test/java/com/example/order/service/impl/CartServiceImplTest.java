@@ -25,12 +25,13 @@ import static org.mockito.Mockito.when;
 class CartServiceImplTest {
 
     private CartMapper cartMapper;
+    private ProductMapper productMapper;
     private CartServiceImpl service;
 
     @BeforeEach
     void setUp() {
         cartMapper = mock(CartMapper.class);
-        ProductMapper productMapper = mock(ProductMapper.class);
+        productMapper = mock(ProductMapper.class);
         service = new CartServiceImpl(cartMapper, productMapper);
     }
 
@@ -90,5 +91,111 @@ class CartServiceImplTest {
         service.remove(1L);
 
         verify(cartMapper).deleteById(1L);
+    }
+
+    // ---------- 购物车数量校验：0/负数/超上限一律拦下，绝不写库 ----------
+
+    private static com.example.order.dto.AddCartDTO dtoOf(Long productId, Integer quantity) {
+        com.example.order.dto.AddCartDTO dto = new com.example.order.dto.AddCartDTO();
+        dto.setProductId(productId);
+        dto.setQuantity(quantity);
+        return dto;
+    }
+
+    @Test
+    void 加购_数量0_400_不写库() {
+        Throwable t = catchThrowable(() -> service.add(dtoOf(10L, 0)));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("大于 0");
+        verify(cartMapper, never()).insert(any(Cart.class));
+        verify(cartMapper, never()).updateById(any(Cart.class));
+    }
+
+    @Test
+    void 加购_数量负数_400_不写库() {
+        Throwable t = catchThrowable(() -> service.add(dtoOf(10L, -5)));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        verify(cartMapper, never()).insert(any(Cart.class));
+        verify(cartMapper, never()).updateById(any(Cart.class));
+    }
+
+    @Test
+    void 加购_数量超上限_400_不写库() {
+        Throwable t = catchThrowable(() -> service.add(dtoOf(10L, 1000)));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("999");
+        verify(cartMapper, never()).insert(any(Cart.class));
+        verify(cartMapper, never()).updateById(any(Cart.class));
+    }
+
+    @Test
+    void 加购_数量为空_400_不写库() {
+        Throwable t = catchThrowable(() -> service.add(dtoOf(10L, null)));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("数量不能为空");
+        verify(cartMapper, never()).insert(any(Cart.class));
+    }
+
+    @Test
+    void 加购_商品id为空_400_不写库() {
+        Throwable t = catchThrowable(() -> service.add(dtoOf(null, 2)));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("商品不能为空");
+        verify(cartMapper, never()).insert(any(Cart.class));
+    }
+
+    @Test
+    void 改数量_数量0_400_不查库不改库() {
+        Throwable t = catchThrowable(() -> service.updateQuantity(1L, 0));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        // 非法数量在归属校验之前就拦下：连 cartMapper.selectById 都不该发生
+        verify(cartMapper, never()).selectById(anyLong());
+        verify(cartMapper, never()).updateById(any(Cart.class));
+    }
+
+    @Test
+    void 改数量_数量负数_400() {
+        Throwable t = catchThrowable(() -> service.updateQuantity(1L, -1));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        verify(cartMapper, never()).updateById(any(Cart.class));
+    }
+
+    @Test
+    void 改数量_数量超上限_400() {
+        Throwable t = catchThrowable(() -> service.updateQuantity(1L, 1000));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("999");
+        verify(cartMapper, never()).updateById(any(Cart.class));
+    }
+
+    @Test
+    void 改数量_数量为空_400() {
+        Throwable t = catchThrowable(() -> service.updateQuantity(1L, null));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("数量不能为空");
+        verify(cartMapper, never()).updateById(any(Cart.class));
+    }
+
+    @Test
+    void 加购_合法数量_正常插入() {
+        com.example.order.entity.Product p = new com.example.order.entity.Product();
+        p.setId(10L);
+        p.setStatus(1);
+        when(productMapper.selectById(10L)).thenReturn(p);
+        when(cartMapper.selectOne(any())).thenReturn(null);
+        UserContext.set(1L, "u", "USER");
+
+        service.add(dtoOf(10L, 2));
+
+        verify(cartMapper).insert(any(Cart.class));
     }
 }

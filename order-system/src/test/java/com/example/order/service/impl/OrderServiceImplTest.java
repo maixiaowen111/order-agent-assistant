@@ -202,7 +202,7 @@ class OrderServiceImplTest {
         cart.setId(1L);
         cart.setProductId(10L);
         cart.setQuantity(2);
-        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));
+        when(cartMapper.selectList(any())).thenReturn(List.of(cart));
         Product p = product(10L, 100);
         p.setName("iPhone 15 Ultra");
         p.setPrice(new BigDecimal("5000.00"));
@@ -233,7 +233,7 @@ class OrderServiceImplTest {
         cart.setId(1L);
         cart.setProductId(10L);
         cart.setQuantity(5);
-        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));
+        when(cartMapper.selectList(any())).thenReturn(List.of(cart));
         Product p = product(10L, 10);  // 预读还够（快失败放行），但并发下实际已被别人扣光
         p.setName("iPhone 15 Ultra");
         p.setPrice(new BigDecimal("5000.00"));   // 真实商品必有价格（校验阶段先算总金额）
@@ -403,7 +403,7 @@ class OrderServiceImplTest {
         cart.setId(1L);
         cart.setProductId(10L);
         cart.setQuantity(2);
-        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));
+        when(cartMapper.selectList(any())).thenReturn(List.of(cart));
         Product p = product(10L, 100);
         p.setName("iPhone 15 Ultra");
         p.setPrice(new BigDecimal("5000.00"));
@@ -527,7 +527,7 @@ class OrderServiceImplTest {
         cart.setId(1L);
         cart.setProductId(10L);
         cart.setQuantity(2);
-        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));
+        when(cartMapper.selectList(any())).thenReturn(List.of(cart));
         Product p = product(10L, 100);
         p.setName("iPhone 15 Ultra");
         p.setPrice(new BigDecimal("5000.00"));
@@ -549,6 +549,290 @@ class OrderServiceImplTest {
             ArgumentCaptor<Order> cap = ArgumentCaptor.forClass(Order.class);
             verify(orderMapper).insert(cap.capture());
             assertThat(cap.getValue().getClientRequestId()).isNull();
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    // ---------- 下单购物车越权：cartId 必须全部属于当前用户 ----------
+
+    @Test
+    void 下单_购物车属于别人_403_无任何副作用() {
+        // 用户 5 下单，但 cartId=1 属于用户 99 → 按 userId 过滤后查不到 → 403
+        when(cartMapper.selectList(any())).thenReturn(List.of());
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海");
+
+            Throwable t = catchThrowable(() -> service.create(dto));
+
+            assertThat(t).isInstanceOf(BusinessException.class);
+            assertThat(((BusinessException) t).getCode()).isEqualTo(403);
+            // 越权直接拦下：不扣库存、不落单、不删任何购物车
+            verify(productMapper, never()).deductStock(any(), any());
+            verify(orderMapper, never()).insert(any(Order.class));
+            verify(cartMapper, never()).deleteBatchIds(any());
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 下单_混合自己与别人的购物车_403() {
+        // 用户 5 请求 [1,2]：1 是自己的，2 是别人的 → 按 userId 过滤只查到 1 条 → 403
+        Cart mine = new Cart();
+        mine.setId(1L);
+        mine.setUserId(5L);
+        mine.setProductId(10L);
+        mine.setQuantity(2);
+        when(cartMapper.selectList(any())).thenReturn(List.of(mine));
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L, 2L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海");
+
+            Throwable t = catchThrowable(() -> service.create(dto));
+
+            assertThat(t).isInstanceOf(BusinessException.class);
+            assertThat(((BusinessException) t).getCode()).isEqualTo(403);
+            // 绝不拿"属于自己的那部分"继续下单
+            verify(productMapper, never()).deductStock(any(), any());
+            verify(orderMapper, never()).insert(any(Order.class));
+            verify(cartMapper, never()).deleteBatchIds(any());
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 下单_购物车id不存在_403() {
+        when(cartMapper.selectList(any())).thenReturn(List.of());
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(999L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海");
+
+            Throwable t = catchThrowable(() -> service.create(dto));
+
+            assertThat(t).isInstanceOf(BusinessException.class);
+            assertThat(((BusinessException) t).getCode()).isEqualTo(403);
+            verify(productMapper, never()).deductStock(any(), any());
+            verify(orderMapper, never()).insert(any(Order.class));
+            verify(cartMapper, never()).deleteBatchIds(any());
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    // ---------- 下单数量二次校验：非法数量绝不进库存公式 ----------
+
+    @Test
+    void 下单_购物车数量负数_400_不扣库存不落单() {
+        Cart cart = new Cart();
+        cart.setId(1L);
+        cart.setUserId(5L);
+        cart.setProductId(10L);
+        cart.setQuantity(-5);
+        when(cartMapper.selectList(any())).thenReturn(List.of(cart));
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海");
+
+            Throwable t = catchThrowable(() -> service.create(dto));
+
+            assertThat(t).isInstanceOf(BusinessException.class);
+            assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+            // 负数绝不能进 stock - quantity（否则库存反向 +5）
+            verify(productMapper, never()).deductStock(any(), any());
+            verify(orderMapper, never()).insert(any(Order.class));
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 下单_购物车数量超上限_400() {
+        Cart cart = new Cart();
+        cart.setId(1L);
+        cart.setUserId(5L);
+        cart.setProductId(10L);
+        cart.setQuantity(1000);
+        when(cartMapper.selectList(any())).thenReturn(List.of(cart));
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海");
+
+            Throwable t = catchThrowable(() -> service.create(dto));
+
+            assertThat(t).isInstanceOf(BusinessException.class);
+            assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+            verify(productMapper, never()).deductStock(any(), any());
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    // ---------- 请求指纹：同键比对不依赖购物车是否还在 ----------
+
+    @Test
+    void 下单成功_落库时带请求指纹() {
+        Cart cart = new Cart();
+        cart.setId(1L);
+        cart.setUserId(5L);
+        cart.setProductId(10L);
+        cart.setQuantity(2);
+        when(cartMapper.selectList(any())).thenReturn(List.of(cart));
+        Product p = product(10L, 100);
+        p.setName("iPhone 15 Ultra");
+        p.setPrice(new BigDecimal("5000.00"));
+        p.setStatus(1);
+        when(productMapper.selectById(10L)).thenReturn(p);
+        when(productMapper.deductStock(10L, 2)).thenReturn(1);
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海");
+
+            service.create(dto);
+
+            ArgumentCaptor<Order> cap = ArgumentCaptor.forClass(Order.class);
+            verify(orderMapper).insert(cap.capture());
+            String fp = cap.getValue().getRequestFingerprint();
+            assertThat(fp).contains("\"receiverName\":\"张小明\"");
+            assertThat(fp).contains("\"items\":\"10:2\"");
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 同幂等键_指纹一致_正常回放() {
+        Order existing = shippingOrder(1L, "WAIT_PAY");
+        existing.setRequestFingerprint("{\"receiverName\":\"张小明\",\"receiverPhone\":\"13800138000\",\"receiverAddress\":\"上海市浦东新区张江高科技园区\",\"items\":\"10:2\"}");
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        Cart cart = new Cart();
+        cart.setId(1L);
+        cart.setProductId(10L);
+        cart.setQuantity(2);
+        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海市浦东新区张江高科技园区");
+            dto.setClientRequestId("req-123");
+
+            OrderVO vo = service.create(dto);
+
+            assertThat(vo.getOrderNo()).isEqualTo("NO1");
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 同幂等键_指纹不同_换商品_400() {
+        Order existing = shippingOrder(1L, "WAIT_PAY");
+        existing.setRequestFingerprint("{\"receiverName\":\"张小明\",\"receiverPhone\":\"13800138000\",\"receiverAddress\":\"上海市浦东新区张江高科技园区\",\"items\":\"10:2\"}");
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        Cart cart = new Cart();
+        cart.setId(2L);
+        cart.setProductId(11L);
+        cart.setQuantity(1);
+        when(cartMapper.selectBatchIds(List.of(2L))).thenReturn(List.of(cart));
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(2L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海市浦东新区张江高科技园区");
+            dto.setClientRequestId("req-123");
+
+            Throwable t = catchThrowable(() -> service.create(dto));
+
+            assertThat(t).isInstanceOf(BusinessException.class);
+            assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+            assertThat(((BusinessException) t).getMessage()).contains("不同的下单内容");
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 同幂等键_指纹不同_换数量_400() {
+        Order existing = shippingOrder(1L, "WAIT_PAY");
+        existing.setRequestFingerprint("{\"receiverName\":\"张小明\",\"receiverPhone\":\"13800138000\",\"receiverAddress\":\"上海市浦东新区张江高科技园区\",\"items\":\"10:2\"}");
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        Cart cart = new Cart();
+        cart.setId(1L);
+        cart.setProductId(10L);
+        cart.setQuantity(3);   // 同商品但数量从 2 变 3
+        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海市浦东新区张江高科技园区");
+            dto.setClientRequestId("req-123");
+
+            Throwable t = catchThrowable(() -> service.create(dto));
+
+            assertThat(t).isInstanceOf(BusinessException.class);
+            assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+            assertThat(((BusinessException) t).getMessage()).contains("不同的下单内容");
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 同幂等键_首次下单后购物车已删_重试正常回放() {
+        // 首次下单成功后购物车已被删，重试查不到购物车——指纹是创建时落库的不可变快照，
+        // 即使购物车没了也不影响内容一致性判断（收货信息对得上 + 有指纹即可放行）。
+        Order existing = shippingOrder(1L, "WAIT_PAY");
+        existing.setRequestFingerprint("{\"receiverName\":\"张小明\",\"receiverPhone\":\"13800138000\",\"receiverAddress\":\"上海市浦东新区张江高科技园区\",\"items\":\"10:2\"}");
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of());   // 购物车已删，查不到
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海市浦东新区张江高科技园区");
+            dto.setClientRequestId("req-123");
+
+            OrderVO vo = service.create(dto);
+
+            assertThat(vo.getOrderNo()).isEqualTo("NO1");
+            verify(productMapper, never()).deductStock(any(), any());
+            verify(orderMapper, never()).insert(any(Order.class));
         } finally {
             UserContext.clear();
         }

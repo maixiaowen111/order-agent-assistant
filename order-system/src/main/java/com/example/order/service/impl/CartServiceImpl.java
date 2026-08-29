@@ -33,6 +33,13 @@ import com.example.order.exception.BusinessException;
       @Override
       @Transactional(rollbackFor = Exception.class)
       public void add(AddCartDTO dto) {
+          // 0. 参数校验：productId 非空正数 + quantity 在 [1,999]。
+          //    数量不拦的话，负数会一路进库存公式 stock - quantity——quantity=-5 让库存反向 +5。
+          if (dto.getProductId() == null || dto.getProductId() < 1) {
+              throw new BusinessException(400, "商品不能为空");
+          }
+          validateQuantity(dto.getQuantity());
+
           // 1. 校验商品是否存在且已上架
           Product product = productMapper.selectById(dto.getProductId());
           if (Objects.isNull(product) || product.getStatus() != 1) {
@@ -56,6 +63,19 @@ import com.example.order.exception.BusinessException;
               cart.setProductId(dto.getProductId());
               cart.setQuantity(dto.getQuantity());
               cartMapper.insert(cart);
+          }
+      }
+
+      /** 数量合法性：>0 且 ≤999。0 和负数会让库存公式 stock - quantity 反向加库存，必须拦死 */
+      private void validateQuantity(Integer quantity) {
+          if (quantity == null) {
+              throw new BusinessException(400, "数量不能为空");
+          }
+          if (quantity < 1) {
+              throw new BusinessException(400, "数量必须大于 0");
+          }
+          if (quantity > 999) {
+              throw new BusinessException(400, "数量不能超过 999");
           }
       }
 
@@ -98,6 +118,8 @@ import com.example.order.exception.BusinessException;
       @Override
       @Transactional(rollbackFor = Exception.class)
       public void updateQuantity(Long cartId, Integer quantity) {
+          // 先拦非法数量：0/负数/超上限都别进库里（负数同理会反向加库存）
+          validateQuantity(quantity);
           Cart cart = cartMapper.selectById(cartId);
           if (Objects.isNull(cart)) {
               throw new BusinessException(404, "购物车记录不存在");
