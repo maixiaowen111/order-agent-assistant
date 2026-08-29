@@ -14,7 +14,8 @@ public class InMemoryPendingStore implements PendingStore {
 
     @Override
     public void save(Long userId, String sessionId, String toolName, String fingerprint) {
-        data.put(key(userId, sessionId), new Pending(toolName, fingerprint));
+        // 与 RedisPendingStore 对齐：先拦下的优先，已有未批准的提议时不覆盖
+        data.putIfAbsent(key(userId, sessionId), new Pending(toolName, fingerprint));
     }
 
     @Override

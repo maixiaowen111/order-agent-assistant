@@ -103,9 +103,24 @@ class RedisSessionStoreTest {
         boolean ok = store.saveIfUnchanged("s1", List.of(Message.user("你好")), 0);
 
         assertThat(ok).isTrue();
-        // 脚本一次拿到两个 key：消息 + 版本；参数 = 期望版本 / 消息 JSON / TTL 秒
-        verify(redis).execute(any(RedisScript.class), eq(List.of("agent:session:s1", "agent:ver:s1")),
+        // 脚本一次拿到三个 key：消息 + 版本 + 归属；参数 = 期望版本 / 消息 JSON / TTL 秒
+        verify(redis).execute(any(RedisScript.class),
+                eq(List.of("agent:session:s1", "agent:ver:s1", "agent:owner:s1")),
                 any(Object[].class));
+    }
+
+    @Test
+    void saveIfUnchanged_归属key一并传给脚本_保存成功顺带续期owner() {
+        // owner 只在绑定那一刻给一次 TTL，若保存时不续期，活跃会话聊超 30 分钟 owner 先过期、
+        // 消息还活着 → 别人能抢绑读历史。所以脚本的 KEYS[3] 必须带上 owner key。
+        stubSaveOk();
+
+        store.saveIfUnchanged("s1", List.of(Message.user("你好")), 0);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> keys = ArgumentCaptor.forClass(List.class);
+        verify(redis).execute(any(RedisScript.class), keys.capture(), any(Object[].class));
+        assertThat(keys.getValue()).containsExactly("agent:session:s1", "agent:ver:s1", "agent:owner:s1");
     }
 
     @Test
@@ -125,7 +140,8 @@ class RedisSessionStoreTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
-        verify(redis).execute(any(RedisScript.class), eq(List.of("agent:session:s1", "agent:ver:s1")), args.capture());
+        verify(redis).execute(any(RedisScript.class),
+                eq(List.of("agent:session:s1", "agent:ver:s1", "agent:owner:s1")), args.capture());
 
         assertThat(args.getValue()[0]).isEqualTo("0");          // 期望版本
         assertThat(args.getValue()[2]).isEqualTo("1800");       // 30 分钟 TTL（秒）

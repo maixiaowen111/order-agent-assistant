@@ -28,11 +28,19 @@ public class AgentJwtService {
      * 签名不对/过期/格式错误都会抛 JwtException，由 AgentAuthInterceptor 统一转 401。
      */
     public Long userId(String token) {
-        Claims claims = Jwts.parser()
+        return Long.valueOf(claims(token).getSubject());
+    }
+
+    /** 返回 token 的签发时间（毫秒）。黑名单校验要用它和退出时间戳比对。 */
+    public long issuedAtMillis(String token) {
+        return claims(token).getIssuedAt().getTime();
+    }
+
+    private Claims claims(String token) {
+        return Jwts.parser()
                 .verifyWith(key)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
-        return Long.valueOf(claims.getSubject());
     }
 }

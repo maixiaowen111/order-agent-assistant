@@ -98,6 +98,19 @@ class WritePermissionGateTest {
     }
 
     @Test
+    void 同一会话连续拦下两个不同操作_批准的是先拦的() {
+        // 模拟 MCP 固定 mcp-{userId} 槽位：模型先提议取消 A，批准前又提议取消 B。
+        // pending 首拦优先（不覆盖）→ 人点批准放行的是 A（人看到的那个），B 必须重新批准。
+        assertThat(gate.blocks(cancel("A"), "mcp-1", 1L)).isTrue();   // 拦下 A
+        assertThat(gate.blocks(cancel("B"), "mcp-1", 1L)).isTrue();   // 拦下 B，不顶掉 A
+
+        gate.approve(1L, "mcp-1");                                     // 人点批准
+
+        assertThat(gate.blocks(cancel("A"), "mcp-1", 1L)).isFalse();  // 批准的是 A → A 放行执行
+        assertThat(gate.blocks(cancel("B"), "mcp-1", 1L)).isTrue();   // B 从未被批准 → 仍拦
+    }
+
+    @Test
     void 拦截原因包含订单号和人工确认字样() {
         assertThat(gate.reason(cancel("A123"))).contains("A123").contains("人工确认");
     }

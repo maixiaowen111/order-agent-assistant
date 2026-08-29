@@ -87,4 +87,5 @@ npx @modelcontextprotocol/inspector
 
 - **客户端连不上 / 握手 401**：确认 agent 起着、URL 没拼错（`http://localhost:8081/mcp`，不是 8080）；**`/mcp` 要登录**——headers 里 `Authorization: Bearer <token>` 是否填了、token 是不是刚从 order-system 登录拿的（过期/不对会 401）；看 agent 日志有没有请求进来
 - **写操作永远成功不了**：批准是 per-session 的。MCP 的会话固定是 `mcp-<你的userId>`（block 响应正文里也直接给出），`POST /approve` 的 body 里 sessionId 填它；批准后**重新让模型执行同一操作**那一步（不是客户端自动重试）。批准一次性：改参数 / 换工具 / 换用户 / 过期都要重新批准
+- **同一会话连着拦下两个不同操作，批准的是哪一个**：pending 首拦优先——先被拦下的那个优先，批准放行它；后一个不会顶掉前一个，须等第一个批准/作废后才能被批准。所以人批准的一定是他第一次看到的那次操作，不会「批准了 A 实际放行 B」。
 - **想改端口**：`application.yml` 的 `server.port`，Claude Desktop 配置里的 URL 同步改

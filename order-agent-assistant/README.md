@@ -67,6 +67,15 @@ MCP 的本质是把工具以「名字 + 描述 + 输入 Schema」暴露给模型
 **5. agent 为什么不直连数据库？**
 业务规则只留一份在 order-system，agent 所有数据读写都走内部 HTTP + `X-Internal-Key` 密钥鉴权——agent 是纯决策者，不碰存储细节。
 
+**6. 退出登录后旧 JWT 在 agent 这层怎么失效？**
+agent 和 order-system 连同一个 Redis，拦截器读同一条黑名单 `TOKEN_VER:{userId}`：order-system 退出时写「退出时间戳」，agent 比对 token 签发时间(iat)，早于退出时间 → 401。否则用户退出登录后，旧 token 在 /query、/approve、/mcp 照样能用——agent 把 userId 当身份往下游传，不查黑名单等于把「退出」这个动作在 agent 侧架空。
+
+**7. 会话归属为什么和消息同步续期 TTL？**
+消息每次保存都刷新 30 分钟 TTL，owner 只在绑定时给一次——聊超 30 分钟的活跃会话，owner 会先过期、消息还活着，别人能抢绑并读到历史。所以保存消息的 Lua 里同步续 owner 的 TTL，归属与消息同生命周期，永不比消息先死。
+
+**8. MCP 固定 mcp-{userId}，并发写操作为什么不会互相覆盖 pending？**
+pending 用 SETNX 首拦优先：该会话已有未批准的提议时不覆盖。MCP 所有写操作共用一个槽位，若允许覆盖，模型先提议「取消A」再提议「改地址」，人点批准放行的实际是后一个——人批准的和看到的对不上。首拦优先保证人批准永远放行第一个被拦下的操作。
+
 ## 踩坑记录（面试实战弹药）
 
 「为什么这么设计」在上一节，这一节是**真的踩过、真的修好的坑**：Spring 通配符不看方法导致编辑商品 403、浏览器缓存旧 JS 看不到新功能、agent 拦截器缺解包、LLM 工具选择随机性……每条都是「现象 → 根因 → 修复 → 面试怎么讲」，见 [PITFALLS.md](PITFALLS.md)。
@@ -234,8 +243,8 @@ Vite 代理已配好：`/api`→8080、`/query`+`/approve`→8081，同样无跨
 ## 测试
 
 ```bash
-cd order-agent-assistant && mvn test    # 150 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / 限流 / 请求体上限 / 异常 / 脱敏 / MCP 握手 + 写审批闭环（未批准拦下 → /approve(mcp-<userId>) → 批准后真正执行）
-cd order-system && mvn test             # 49 个用例：取消状态机 / 通知中心 / 脱敏 / 商品图片 / 订单归属 / 事件重试
+cd order-agent-assistant && mvn test    # 164 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / 限流 / 请求体上限 / 异常 / 脱敏 / JWT 黑名单 / MCP 握手 + 写审批闭环（未批准拦下 → /approve(mcp-<userId>) → 批准后真正执行）
+cd order-system && mvn test             # 70 个用例：鉴权 / 库存并发防超卖 / 幂等重放（含同键不同数量报冲突）/ 下单补偿 / 取消 Outbox / 调度器补发 / 事件重试
 ```
 
 不依赖中间件，纯 Mockito 单元测试，任何机器都能跑绿。跨服务的协作问题（密钥配对 / 脱敏 / 写闸门）由端到端冒烟脚本 `scripts/smoke.sh` 覆盖（起真 MySQL/Redis + 两个后端）。
@@ -254,7 +263,7 @@ order-agent-assistant/     # 决策层（本仓库）
     DeepSeekLlmClient      LLM 通道（OpenAI 兼容 API）
     AgentController        REST 入口（/query、/approve）
     langchain4j/           并行接入实验模块（用 LangChain4j 框架接入 DeepSeek 的探索：意图识别、写工具提议闸门、Demo）
-  src/test/java/           单元测试（150 个用例，含 McpHandshakeTest 严格客户端握手模拟 + 写审批闭环）
+  src/test/java/           单元测试（164 个用例，含 McpHandshakeTest 严格客户端握手模拟 + 写审批闭环）
   Dockerfile / docker-compose.yml / .env.example
 
 order-system/              # 执行层（同级目录）

@@ -1,6 +1,7 @@
 package com.orderagent;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 
@@ -9,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * 验证「MCP 也要登录」真的挂上了：WebConfig 把鉴权拦截器同时挂到 /query、/approve、/mcp。
@@ -27,7 +29,7 @@ class WebConfigTest {
     void 鉴权拦截器挂在query_approve_mcp上() throws Exception {
         WebConfig config = new WebConfig(
                 List.of("http://localhost:5173", "http://localhost:6274"),
-                new AgentAuthInterceptor(new AgentJwtService(SECRET)));
+                new AgentAuthInterceptor(new AgentJwtService(SECRET), mock(StringRedisTemplate.class)));
         InterceptorRegistry registry = new InterceptorRegistry();
         config.addInterceptors(registry);
 

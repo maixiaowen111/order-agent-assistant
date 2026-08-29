@@ -49,11 +49,15 @@ public class RedisSessionStore implements SessionStore {
 
     /**
      * 乐观锁保存（CAS）：
-     *   KEYS[1] = 消息 key，KEYS[2] = 版本 key
+     *   KEYS[1] = 消息 key，KEYS[2] = 版本 key，KEYS[3] = 归属(owner) key
      *   ARGV[1] = 期望版本，ARGV[2] = 消息 JSON，ARGV[3] = TTL 秒
      * 语义：当前版本 == 期望版本 才写入（新会话 = 版本 key 不存在且期望 0），并原子地版本 +1。
      * 两个并发保存同一会话，第二个会因为版本已被第一个改掉而返回 0，绝不覆盖。
      * Redis 单线程执行整个脚本，读+写之间没有竞态窗口。
+     *
+     * 归属也要在同一脚本里续期：消息 TTL 每次保存都刷新，若 owner TTL 只在绑定那一刻给一次，
+     * 一个活跃会话聊超过 30 分钟，owner 会先过期、消息还活着——别人就能抢绑并读到历史。
+     * 归属存在才续（没绑定的会话不写多余命令），这样 owner 与消息同生命周期，永不比消息先死。
      */
     private static final DefaultRedisScript<Long> SAVE_IF_UNCHANGED = new DefaultRedisScript<>(
             "local cur = redis.call('GET', KEYS[2]);"
@@ -61,6 +65,7 @@ public class RedisSessionStore implements SessionStore {
                     + "  if ARGV[1] == '0' then"
                     + "    redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]);"
                     + "    redis.call('SET', KEYS[2], '1', 'EX', ARGV[3]);"
+                    + "    if redis.call('EXISTS', KEYS[3]) == 1 then redis.call('EXPIRE', KEYS[3], ARGV[3]); end"
                     + "    return 1;"
                     + "  end"
                     + "  return 0;"
@@ -68,6 +73,7 @@ public class RedisSessionStore implements SessionStore {
                     + "if cur == ARGV[1] then"
                     + "  redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]);"
                     + "  redis.call('SET', KEYS[2], tostring(tonumber(cur) + 1), 'EX', ARGV[3]);"
+                    + "  if redis.call('EXISTS', KEYS[3]) == 1 then redis.call('EXPIRE', KEYS[3], ARGV[3]); end"
                     + "  return 1;"
                     + "end;"
                     + "return 0;",
@@ -136,7 +142,7 @@ public class RedisSessionStore implements SessionStore {
         try {
             String body = json.writeValueAsString(list);
             Long result = redis.execute(SAVE_IF_UNCHANGED,
-                    List.of(key(sessionId), versionKey(sessionId)),
+                    List.of(key(sessionId), versionKey(sessionId), ownerKey(sessionId)),
                     String.valueOf(expectedVersion), body, String.valueOf(TTL.getSeconds()));
             return result != null && result == 1L;
         } catch (Exception e) {

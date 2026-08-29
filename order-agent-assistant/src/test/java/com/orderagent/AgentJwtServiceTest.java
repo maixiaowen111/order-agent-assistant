@@ -36,6 +36,20 @@ class AgentJwtServiceTest {
     }
 
     @Test
+    void 能取出签发时间_供黑名单比对() {
+        // JWT 的 iat 按秒存，毫秒会被截掉——取整秒时间戳，往返比对才精确
+        long issuedAt = (System.currentTimeMillis() / 1000) * 1000 - 60_000;
+        String t = Jwts.builder()
+                .subject("42")
+                .issuedAt(new Date(issuedAt))
+                .expiration(new Date(System.currentTimeMillis() + 60_000))
+                .signWith(Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8)))
+                .compact();
+
+        assertThat(jwt.issuedAtMillis(t)).isEqualTo(issuedAt);
+    }
+
+    @Test
     void 换密钥签发的token_验签失败抛异常() {
         String forged = Jwts.builder()
                 .subject("42")
