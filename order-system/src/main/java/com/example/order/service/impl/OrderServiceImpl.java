@@ -32,6 +32,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -58,75 +59,68 @@ public class OrderServiceImpl implements OrderService {
         Long userId = UserContext.getUserId();
 
         // 0. 幂等键（可选）：同一 clientRequestId 只允许一个订单。
-        //    客户端网络重试/重复提交时直接回放已有订单，不再扣库存/重复下单。
-        //    并发竞态：两个同键请求同时越过预检查 → 各自扣库存 → 一个 insert 命中唯一键
-        //    uk_client_request_id，另一个撞键抛 DuplicateKeyException → 走下方 catch 回放赢家订单。
+        //    客户端网络重试/重复提交时，先校验请求内容与已有订单一致再回放——同键不同内容直接报参数冲突。
+        //    并发竞态：两个同键请求同时越过预检查 → 见下方 try——订单先落库，唯一键
+        //    uk_client_request_id 在扣任何库存之前就生效，输家撞键时库存一毫未动，干净回放赢家订单。
         String clientRequestId = dto.getClientRequestId();
         if (clientRequestId != null && !clientRequestId.isBlank()) {
             Order existing = orderMapper.selectOne(new LambdaQueryWrapper<Order>()
                     .eq(Order::getClientRequestId, clientRequestId));
             if (existing != null) {
                 checkOwner(existing, userId);   // 幂等键也是资源：不能拿别人的键回放别人的订单
+                assertSameRequestContent(dto, existing);   // 同键不同内容 → 400 参数冲突
                 log.info("幂等命中（下单）：clientRequestId={} 已下单，回放订单 orderNo={}",
                         clientRequestId, existing.getOrderNo());
                 return buildDetail(existing);
             }
         }
 
+        // 1. 查出要购买的购物车记录 + 逐个校验商品 + 构建订单快照 + 计算总金额。
+        //    这一遍只读不写：商品下架/库存不足在这里快速失败，此刻一个副作用都没有。
+        List<Cart> cartList = cartMapper.selectBatchIds(dto.getCartIds());
+        if (CollectionUtils.isEmpty(cartList)) {
+            throw new BusinessException(400, "购物车记录不存在");
+        }
+
+        BigDecimal totalAmount = BigDecimal.ZERO;
+        List<OrderItem> orderItems = new ArrayList<>();
+
+        for (Cart cart : cartList) {
+            // 读一次用于校验商品状态 + 构建订单快照（价格/名称）
+            Product product = productMapper.selectById(cart.getProductId());
+            if (Objects.isNull(product) || product.getStatus() != 1) {
+                throw new BusinessException(400,
+                        "商品【" + (product != null ? product.getName() : "未知") + "】已下架或不存在");
+            }
+
+            // 快速失败：明显不够的直接拦，不用等原子扣减
+            if (product.getStock() < cart.getQuantity()) {
+                throw new BusinessException(400,
+                        "商品【" + product.getName() + "】库存不足，剩余：" + product.getStock());
+            }
+
+            // 计算小计（快照用下单时的价格）
+            BigDecimal itemTotal = product.getPrice()
+                    .multiply(BigDecimal.valueOf(cart.getQuantity()));
+            totalAmount = totalAmount.add(itemTotal);
+
+            // 构建订单详情（快照）
+            OrderItem item = new OrderItem();
+            item.setProductId(product.getId());
+            item.setProductName(product.getName());
+            item.setProductPrice(product.getPrice());
+            item.setQuantity(cart.getQuantity());
+            item.setTotalPrice(itemTotal);
+            orderItems.add(item);
+        }
+
+        // 2. 生成订单号
+        String orderNo = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
+                + UUID.randomUUID().toString().substring(0, 6);
+
         try {
-            // 1. 查出要购买的购物车记录
-            List<Cart> cartList = cartMapper.selectBatchIds(dto.getCartIds());
-            if (CollectionUtils.isEmpty(cartList)) {
-                throw new BusinessException(400, "购物车记录不存在");
-            }
-
-            // 2. 逐个校验商品 + 原子扣库存 + 计算总金额
-            BigDecimal totalAmount = BigDecimal.ZERO;
-            List<OrderItem> orderItems = new ArrayList<>();
-
-            for (Cart cart : cartList) {
-                // 读一次用于校验商品状态 + 构建订单快照（价格/名称）
-                Product product = productMapper.selectById(cart.getProductId());
-                if (Objects.isNull(product) || product.getStatus() != 1) {
-                    throw new BusinessException(400,
-                            "商品【" + (product != null ? product.getName() : "未知") + "】已下架或不存在");
-                }
-
-                // 快速失败：明显不够的直接拦，不用等原子扣减
-                if (product.getStock() < cart.getQuantity()) {
-                    throw new BusinessException(400,
-                            "商品【" + product.getName() + "】库存不足，剩余：" + product.getStock());
-                }
-
-                // 原子扣减：UPDATE ... SET stock = stock - ? WHERE stock >= ?
-                // 两个并发请求同时买最后一件：只有一个人 affected=1，另一个 affected=0 被拦下。
-                // 不再"先查再写"——查到的 stock 在并发下可能是旧的，等写的时候已经不够了。
-                int affected = productMapper.deductStock(product.getId(), cart.getQuantity());
-                if (affected == 0) {
-                    throw new BusinessException(400,
-                            "商品【" + product.getName() + "】库存不足，请稍后重试");
-                }
-
-                // 计算小计（快照用下单时的价格）
-                BigDecimal itemTotal = product.getPrice()
-                        .multiply(BigDecimal.valueOf(cart.getQuantity()));
-                totalAmount = totalAmount.add(itemTotal);
-
-                // 构建订单详情（快照）
-                OrderItem item = new OrderItem();
-                item.setProductId(product.getId());
-                item.setProductName(product.getName());
-                item.setProductPrice(product.getPrice());
-                item.setQuantity(cart.getQuantity());
-                item.setTotalPrice(itemTotal);
-                orderItems.add(item);
-            }
-
-            // 3. 生成订单号
-            String orderNo = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
-                    + UUID.randomUUID().toString().substring(0, 6);
-
-            // 4. 保存订单
+            // 3. 先落订单——唯一键 uk_client_request_id 在此生效，且发生在扣任何库存之前。
+            //    并发同键的输家在这里就撞键抛 DuplicateKeyException，此时库存一根毛都没动。
             Order order = new Order();
             order.setOrderNo(orderNo);
             order.setUserId(userId);
@@ -138,34 +132,44 @@ public class OrderServiceImpl implements OrderService {
             order.setClientRequestId(clientRequestId);   // 可为 null（不带幂等键的旧客户端）
             orderMapper.insert(order);
 
-            // 5. 保存订单详情
+            // 4. 逐个原子扣库存 + 落订单明细。扣减放在订单之后：若原子扣减失败（超卖竞争
+            //    affected=0），BusinessException 上抛 → 整个事务回滚，订单不落库，
+            //    绝不会有"库存没扣到却生成了订单"的中间态。
             for (OrderItem item : orderItems) {
                 item.setOrderId(order.getId());
                 item.setOrderNo(orderNo);
+                // 原子扣减：UPDATE ... SET stock = stock - ? WHERE stock >= ?
+                // 两个并发请求同时买最后一件：只有一个人 affected=1，另一个 affected=0 被拦下。
+                // 不再"先查再写"——查到的 stock 在并发下可能是旧的，等写的时候已经不够了。
+                int affected = productMapper.deductStock(item.getProductId(), item.getQuantity());
+                if (affected == 0) {
+                    throw new BusinessException(400,
+                            "商品【" + item.getProductName() + "】库存不足，请稍后重试");
+                }
                 orderItemMapper.insert(item);
             }
 
-            // 6. 删除已下单的购物车记录
+            // 5. 删除已下单的购物车记录
             cartMapper.deleteBatchIds(dto.getCartIds());
 
             log.info("订单创建成功，orderNo={}, totalAmount={}", orderNo, totalAmount);
 
-            // 7. 构建 VO
+            // 6. 构建 VO + 事务内插入事件记录（和订单同事务，保证不丢）
             OrderVO orderVO = buildOrderVO(order, orderItems);
-
-            // 8. 事务内插入事件记录（和订单同事务，保证不丢）
             insertEventRecords(orderVO);
 
             return orderVO;
         } catch (DuplicateKeyException e) {
-            // 并发同键：两个请求同时越过预检查、各自扣了库存，其中一个 insert 撞 uk_client_request_id。
-            // 本请求（输家）在事务方法内 catch 该异常（不穿事务边界 → 不会 UnexpectedRollbackException），
-            // 整个事务回滚、自己那笔库存扣除一并撤销；回查回放赢家已落库的订单。
+            // 并发同键：唯一键在扣库存之前就被执行，输家撞键时没扣过任何库存，没有副作用可补偿。
+            // 在事务方法内 catch（异常不穿事务边界 → 不会 UnexpectedRollbackException），
+            // catch 住后事务正常提交——但本事务此刻只有只读操作，提交的就是个空事务。
+            // 回查回放赢家已落库的订单。
             if (clientRequestId != null && !clientRequestId.isBlank()) {
                 Order existing = orderMapper.selectOne(new LambdaQueryWrapper<Order>()
                         .eq(Order::getClientRequestId, clientRequestId));
                 if (existing != null) {
                     checkOwner(existing, userId);
+                    assertSameRequestContent(dto, existing);   // 同键不同内容 → 400 参数冲突
                     log.info("并发撞唯一键，回放赢家订单 orderNo={}, clientRequestId={}",
                             existing.getOrderNo(), clientRequestId);
                     return buildDetail(existing);
@@ -345,6 +349,59 @@ public class OrderServiceImpl implements OrderService {
         wrapper.eq(OrderItem::getOrderId, order.getId());
         List<OrderItem> items = orderItemMapper.selectList(wrapper);
         return buildOrderVO(order, items);
+    }
+
+    /**
+     * 幂等回放前的参数冲突校验：同 clientRequestId 的下单请求内容必须与已有订单一致，
+     * 否则报 400 参数冲突——客户端不能拿同一个幂等键去下内容不同的单，否则回放会
+     * 返回一份"和他这次请求对不上"的订单，掩盖掉真实意图。
+     *
+     * 收货信息逐字段比对：有一方没填就跳过（无法判断就不拦；正常请求收货信息 @NotBlank 必填，
+     * 缺失只出现在测试/畸形请求，不拦不算放水）。
+     * 商品明细比对新请求购物车：合法重试的购物车已被下单事务删掉、查不到 → 跳过比对，
+     * 收货信息对得上就放行；新请求换了商品 → 购物车还在 → 商品指纹不一致 → 报冲突。
+     */
+    private void assertSameRequestContent(CreateOrderDTO dto, Order existing) {
+        compareReceiverField("收货人", dto.getReceiverName(), existing.getReceiverName());
+        compareReceiverField("收货电话", dto.getReceiverPhone(), existing.getReceiverPhone());
+        compareReceiverField("收货地址", dto.getReceiverAddress(), existing.getReceiverAddress());
+
+        List<Cart> cartList = cartMapper.selectBatchIds(dto.getCartIds());
+        if (CollectionUtils.isEmpty(cartList)) {
+            return;   // 合法重试：购物车已删，无法比对商品，收货信息对得上就放行
+        }
+        LambdaQueryWrapper<OrderItem> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(OrderItem::getOrderId, existing.getId());
+        List<OrderItem> existingItems = orderItemMapper.selectList(wrapper);
+        if (CollectionUtils.isEmpty(existingItems)) {
+            return;   // 老订单无明细，无从比对
+        }
+        if (!itemFingerprint(cartList).equals(orderItemsFingerprint(existingItems))) {
+            throw new BusinessException(400,
+                    "clientRequestId 已用于不同的下单内容（商品不一致），请更换幂等键或核对参数");
+        }
+    }
+
+    private void compareReceiverField(String label, String dtoValue, String existingValue) {
+        if (dtoValue != null && existingValue != null && !dtoValue.equals(existingValue)) {
+            throw new BusinessException(400,
+                    "clientRequestId 已用于不同的下单内容（" + label + "不一致），请更换幂等键或核对参数");
+        }
+    }
+
+    /** 商品内容指纹：productId:quantity 排序后拼接，顺序无关地比对"买了什么、各多少" */
+    private String itemFingerprint(List<Cart> carts) {
+        return carts.stream()
+                .sorted(Comparator.comparing(Cart::getProductId))
+                .map(c -> c.getProductId() + ":" + c.getQuantity())
+                .collect(Collectors.joining(","));
+    }
+
+    private String orderItemsFingerprint(List<OrderItem> items) {
+        return items.stream()
+                .sorted(Comparator.comparing(OrderItem::getProductId))
+                .map(i -> i.getProductId() + ":" + i.getQuantity())
+                .collect(Collectors.joining(","));
     }
 
     /**

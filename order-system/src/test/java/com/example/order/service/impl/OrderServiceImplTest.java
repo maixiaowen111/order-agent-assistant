@@ -236,6 +236,7 @@ class OrderServiceImplTest {
         when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));
         Product p = product(10L, 10);  // 预读还够（快失败放行），但并发下实际已被别人扣光
         p.setName("iPhone 15 Ultra");
+        p.setPrice(new BigDecimal("5000.00"));   // 真实商品必有价格（校验阶段先算总金额）
         p.setStatus(1);
         when(productMapper.selectById(10L)).thenReturn(p);
         when(productMapper.deductStock(10L, 5)).thenReturn(0);  // 原子 UPDATE 影响 0 行 → 拦下
@@ -253,9 +254,12 @@ class OrderServiceImplTest {
             assertThat(t).isInstanceOf(BusinessException.class);
             assertThat(((BusinessException) t).getCode()).isEqualTo(400);
             assertThat(((BusinessException) t).getMessage()).contains("库存不足");
-            // 订单和订单明细一条都没落库
-            verify(orderMapper, never()).insert(any(Order.class));
+            // 订单先落库（幂等唯一键要在扣任何库存之前生效）→ 原子扣减失败 → BusinessException 上抛，
+            // 整个事务回滚、订单行不持久化。mock 测不到"回滚"，这里断言回滚后的事实：
+            // 扣减失败之后的订单明细/购物车/事件一条都没写。
             verify(orderItemMapper, never()).insert(any(OrderItem.class));
+            verify(cartMapper, never()).deleteBatchIds(any());
+            verify(eventRecordMapper, never()).insert(any(EventRecord.class));
         } finally {
             UserContext.clear();
         }
@@ -422,10 +426,96 @@ class OrderServiceImplTest {
             assertThat(vo.getOrderNo()).isEqualTo("NO9");   // 回放赢家订单，不建新单
             // 输家的 insert 确实尝试过一次（撞键），之后不再重复落库
             verify(orderMapper).insert(any(Order.class));
-            // 撞键后整个事务回滚：购物车不删、订单明细不落库、事件不落库
+            // 关键：唯一键在扣库存之前就生效——输家撞键时库存一根毛都没动，
+            // 不会出现"扣了库存却没落单"的残留（修复前这里会 deductStock 后提交事务）
+            verify(productMapper, never()).deductStock(any(), any());
+            // 撞键后不再有副作用：购物车不删、订单明细不落库、事件不落库
             verify(cartMapper, never()).deleteBatchIds(any());
             verify(orderItemMapper, never()).insert(any(OrderItem.class));
             verify(eventRecordMapper, never()).insert(any(EventRecord.class));
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 同幂等键_不同收货信息_400参数冲突() {
+        Order existing = shippingOrder(1L, "WAIT_PAY");   // 已有订单收货人=张小明
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        when(orderItemMapper.selectList(any())).thenReturn(List.of());
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("李四");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海");
+            dto.setClientRequestId("req-123");
+
+            Throwable t = catchThrowable(() -> service.create(dto));
+
+            // 同键不同内容：绝不静默回放，直接 400 参数冲突
+            assertThat(t).isInstanceOf(BusinessException.class);
+            assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+            assertThat(((BusinessException) t).getMessage()).contains("收货人不一致");
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 同幂等键_不同商品_400参数冲突() {
+        Order existing = shippingOrder(1L, "WAIT_PAY");
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        when(orderItemMapper.selectList(any())).thenReturn(List.of(item(10L, 2)));   // 已有订单买的是商品10×2
+        Cart cart = new Cart();
+        cart.setId(2L);
+        cart.setProductId(11L);
+        cart.setQuantity(1);
+        when(cartMapper.selectBatchIds(List.of(2L))).thenReturn(List.of(cart));       // 新请求想买商品11×1
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(2L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海市浦东新区张江高科技园区");
+            dto.setClientRequestId("req-123");
+
+            Throwable t = catchThrowable(() -> service.create(dto));
+
+            assertThat(t).isInstanceOf(BusinessException.class);
+            assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+            assertThat(((BusinessException) t).getMessage()).contains("商品不一致");
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 同幂等键_相同内容_正常回放_不冲突() {
+        Order existing = shippingOrder(1L, "WAIT_PAY");
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        when(orderItemMapper.selectList(any())).thenReturn(List.of(item(10L, 2)));   // 已有订单：商品10×2
+        Cart cart = new Cart();
+        cart.setId(1L);
+        cart.setProductId(10L);
+        cart.setQuantity(2);
+        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));       // 重试内容一致：商品10×2
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海市浦东新区张江高科技园区");
+            dto.setClientRequestId("req-123");
+
+            OrderVO vo = service.create(dto);
+
+            // 内容一致 → 正常回放，不报冲突
+            assertThat(vo.getOrderNo()).isEqualTo("NO1");
+            assertThat(vo.getItems()).hasSize(1);
         } finally {
             UserContext.clear();
         }
