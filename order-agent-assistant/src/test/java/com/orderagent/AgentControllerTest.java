@@ -36,6 +36,7 @@ class AgentControllerTest {
     private OrderSystemApiClient api;
     private ToolProposalGate proposalGate;
     private SessionStore store;
+    private McpSessionRegistry mcpSessions;
     private AgentController controller;
 
     @BeforeEach
@@ -46,7 +47,8 @@ class AgentControllerTest {
         proposalGate = new ToolProposalGate(
                 new InMemoryPendingStore(), new InMemoryApprovalStore(), new LangChain4jWriteTools(api));
         store = mock(SessionStore.class);
-        controller = new AgentController(loop, gate, proposalGate, store, new RateLimiter(1000));
+        mcpSessions = mock(McpSessionRegistry.class);
+        controller = new AgentController(loop, gate, proposalGate, store, new RateLimiter(1000), mcpSessions);
     }
 
     @AfterEach
@@ -161,7 +163,7 @@ class AgentControllerTest {
     void query_超过限流_429() {
         AgentUserContext.set(UID);
         RateLimiter strict = new RateLimiter(2);
-        AgentController c = new AgentController(loop, gate, proposalGate, store, strict);
+        AgentController c = new AgentController(loop, gate, proposalGate, store, strict, mcpSessions);
         when(store.ownerOf(anyString())).thenReturn(UID);
         when(loop.chat(anyString(), eq(UID), anyString())).thenReturn("{\"answer\":\"ok\"}");
 
@@ -206,27 +208,41 @@ class AgentControllerTest {
     }
 
     @Test
-    void approve_mcp命名空间会话_内嵌userId与登录人一致_放行() {
+    void approve_mcp会话_注册表绑定当前用户_放行() {
         AgentUserContext.set(UID);
-        when(store.ownerOf("mcp-1")).thenReturn(null);   // MCP 会话无归属记录，靠命名空间校验
+        when(store.ownerOf("mcp-abc")).thenReturn(null);            // 不是聊天会话
+        when(mcpSessions.touch("mcp-abc")).thenReturn(UID);         // MCP 注册表绑定的是用户 1
 
-        Map<String, String> result = controller.approve(new AgentApproveRequest("mcp-1"));
+        Map<String, String> result = controller.approve(new AgentApproveRequest("mcp-abc"));
 
         assertThat(result).containsKey("result");
-        verify(gate).approve(UID, "mcp-1");               // 手写闸门放行该 MCP 会话的最后一次写调用
+        verify(gate).approve(UID, "mcp-abc");               // 手写闸门放行该 MCP 会话的最后一次写调用
+        verify(mcpSessions).touch("mcp-abc");               // MCP 会话续期 + 查归属
         // MCP 会话不是聊天会话：不喂模型"已批准"（没有 AgentLoop 历史可注入）
         verify(loop, never()).markApproved(anyString());
     }
 
     @Test
-    void approve_mcp会话内嵌userId与登录人不符_403() {
+    void approve_mcp会话_注册表绑定别人_403() {
         AgentUserContext.set(UID);                        // 登录人是 1
-        when(store.ownerOf("mcp-2")).thenReturn(null);    // MCP-2 是用户 2 的命名空间
+        when(store.ownerOf("mcp-abc")).thenReturn(null);
+        when(mcpSessions.touch("mcp-abc")).thenReturn(2L); // 该 MCP 会话是用户 2 的
 
-        assertThatThrownBy(() -> controller.approve(new AgentApproveRequest("mcp-2")))
+        assertThatThrownBy(() -> controller.approve(new AgentApproveRequest("mcp-abc")))
                 .isInstanceOfSatisfying(AgentAuthException.class, e -> assertThat(e.status()).isEqualTo(403));
         verify(gate, never()).approve(any(), any());
         verify(loop, never()).markApproved(any());
+    }
+
+    @Test
+    void approve_mcp会话_注册表查不到_403() {
+        AgentUserContext.set(UID);
+        when(store.ownerOf("mcp-ghost")).thenReturn(null);
+        when(mcpSessions.touch("mcp-ghost")).thenReturn(null);  // 会话不存在/已过期
+
+        assertThatThrownBy(() -> controller.approve(new AgentApproveRequest("mcp-ghost")))
+                .isInstanceOfSatisfying(AgentAuthException.class, e -> assertThat(e.status()).isEqualTo(403));
+        verify(gate, never()).approve(any(), any());
     }
 
     @Test

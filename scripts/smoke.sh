@@ -26,6 +26,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE=(docker compose -f "$ROOT/order-agent-assistant/docker-compose.yml")
 OS="http://localhost:8080"    # order-system（执行层）
 AGENT="http://localhost:8081" # agent（决策层）
+SID=""                        # initialize 签发的 MCP 会话（初始化后非空，后续调用带 Mcp-Session-Id）
 
 GREEN=$'\e[32m'; RED=$'\e[31m'; RESET=$'\e[0m'
 step() { printf '\n▶ %s\n' "$1"; }
@@ -53,14 +54,18 @@ wait_for() {
   done
 }
 
-mcp_call() { # $1=request-id $2=方法 $3=params JSON（可空）；MCP 带登录 token（/mcp 强制 Bearer）
+mcp_call() { # $1=request-id $2=方法 $3=params JSON（可空）$4=额外 curl 参数（可空，如 -D 抓响应头）
   local body
   if [ -n "${3:-}" ]; then
     body="{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"$2\",\"params\":$3}"
   else
     body="{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"$2\"}"
   fi
-  curl -s -X POST "$AGENT/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "$body"
+  local hdr=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
+  # 除 initialize 外，其余调用必须携带 initialize 签发的 Mcp-Session-Id（会话绑定登录用户）
+  [ -n "${SID:-}" ] && hdr+=(-H "Mcp-Session-Id: $SID")
+  # shellcheck disable=SC2086
+  curl -s -X POST "$AGENT/mcp" "${hdr[@]}" ${4:-} -d "$body"
 }
 
 # 从 JSON 里抓第一个字段值（jq 在 Windows Git Bash 不保证有，用 grep/sed 免依赖）
@@ -101,8 +106,14 @@ ok "登录拿到 token（冒烟用户 $UNAME）"
 wait_for "agent(MCP)" 120 -X POST "$AGENT/mcp" -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":0,"method":"ping"}'
 
-step "2 MCP 握手（initialize：协议版本协商 + 服务身份，带登录凭证）"
-HANDSHAKE=$(mcp_call 1 initialize '{"protocolVersion":"2025-06-18"}')
+step "2 MCP 握手（initialize：协议版本协商 + 服务身份 + 签发会话，带登录凭证）"
+# initialize 响应头签发 Mcp-Session-Id（会话绑定登录用户），用 -D 抓下来，后续所有调用都要带
+HDROUT=$(mktemp)
+HANDSHAKE=$(mcp_call 1 initialize '{"protocolVersion":"2025-06-18"}' "-D $HDROUT")
+SID=$(grep -i '^Mcp-Session-Id:' "$HDROUT" | tr -d '\r' | sed -E 's/^[^:]*:[[:space:]]*//' | head -1)
+rm -f "$HDROUT"
+[ -n "$SID" ] || fail "initialize 没签发 Mcp-Session-Id"
+ok "initialize 签发会话 $SID"
 assert_contains "$HANDSHAKE" '"name":"order-agent"'   "initialize 回 serverInfo.name=order-agent"
 assert_contains "$HANDSHAKE" '"protocolVersion":"2025-06-18"' "协议版本回声 2025-06-18"
 

@@ -59,10 +59,10 @@ services:
       DB_PASSWORD: "${DB_PASSWORD:-123456}"
       INTERNAL_API_KEY: "${INTERNAL_API_KEY:-order-agent-internal-key-2026}"
       JWT_SECRET: "${JWT_SECRET:-MyOrderSystemSecretKeyForJwtToken2024!!!}"
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: "6379"
-      # Redisson 锁用的地址也要指向 compose 服务名（spring.data.redis 只覆盖 Spring Data Redis）
-      REDISSON_ADDRESS: redis://redis:6379
+      # order-system 是 Spring Boot 2.7：Redis 属性前缀是 spring.redis.*（不是 spring.data.redis.*，
+      # 那是 Boot 3）。用 SPRING_REDIS_HOST/SPRING_REDIS_PORT 才能覆盖 application-dev.yml 的 localhost。
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: "6379"
       # 商品图片存储目录：命名卷挂到 /app/uploads，容器重建不丢图
       APP_UPLOAD_DIR: /app/uploads
     ports:

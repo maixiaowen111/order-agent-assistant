@@ -21,9 +21,10 @@ import java.util.UUID;
  * sessionId 不再是无主的——伪造/冒用别人的 sessionId 会被 403 拒绝。
  *
  * MCP 的批准通道（McpController 的写工具也走这里）：
- *   MCP 无会话概念，sessionId 固定为 "mcp-<userId>" 命名空间——它没有归属记录，
- *   批准时按命名空间内嵌的 userId 校验：必须等于当前登录用户才放行（见 approve）。
- *   这类会话不是聊天会话，markApproved（喂模型"已批准"）对它跳过。
+ *   MCP 客户端 initialize 时由服务器签发独立会话（Mcp-Session-Id），绑定登录用户，
+ *   归属存 Redis（见 McpSessionRegistry）。批准时按绑定用户校验：必须等于当前登录
+ *   用户才放行（见 approve）。这类会话不是聊天会话，markApproved（喂模型"已批准"）
+ *   对它跳过。
  *
  * 本层的防御（除了登录，还有）：
  *   ① 请求体用 DTO，q 必填、有最大长度，sessionId 有长度/字符集校验（防超长/怪异 key）；
@@ -44,15 +45,18 @@ public class AgentController {
     private final ToolProposalGate proposalGate;
     private final SessionStore store;
     private final RateLimiter rateLimiter;
+    private final McpSessionRegistry mcpSessions;
     private final ObjectMapper json = new ObjectMapper();
 
     public AgentController(AgentLoop loop, WritePermissionGate gate,
-                           ToolProposalGate proposalGate, SessionStore store, RateLimiter rateLimiter) {
+                           ToolProposalGate proposalGate, SessionStore store, RateLimiter rateLimiter,
+                           McpSessionRegistry mcpSessions) {
         this.loop = loop;
         this.gate = gate;
         this.proposalGate = proposalGate;
         this.store = store;
         this.rateLimiter = rateLimiter;
+        this.mcpSessions = mcpSessions;
     }
 
     @PostMapping("/query")
@@ -89,16 +93,10 @@ public class AgentController {
 
         // 只能批准自己名下的会话：防止 A 冒用 B 的 sessionId 给 B 的写操作"点头"
         Long owner = store.ownerOf(sid);
-        if (owner == null && sid.startsWith("mcp-")) {
-            // MCP 会话无状态（没有归属记录），但 sessionId 是 "mcp-<userId>" 命名空间：
-            // 内嵌的 userId 必须等于当前登录用户，才能批准自己的 MCP 写操作。
-            // 解析失败 / 不匹配 → 落到下方 403。
-            try {
-                if (Long.parseLong(sid.substring("mcp-".length())) == userId) {
-                    owner = userId;
-                }
-            } catch (NumberFormatException ignored) {
-            }
+        if (owner == null) {
+            // MCP 会话不是聊天会话（没有 agent:owner 归属），归属在 MCP 会话注册表：
+            // touch 兼续期 + 查绑定用户，必须等于当前登录用户才能批准自己的 MCP 写操作。
+            owner = mcpSessions.touch(sid);
         }
         if (owner == null || !owner.equals(userId)) {
             throw new AgentAuthException(403, "无权访问该会话");

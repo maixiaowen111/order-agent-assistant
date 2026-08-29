@@ -33,7 +33,10 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addMapping("/mcp")
                 .allowedOriginPatterns(allowedOrigins.toArray(new String[0]))
                 .allowedMethods("GET", "POST", "OPTIONS")
-                .allowedHeaders("*");
+                .allowedHeaders("*")
+                // 浏览器里跑 MCP 客户端（如 MCP Inspector）要能读到服务器签发的会话头，
+                // 否则 initialize 拿不到 Mcp-Session-Id、后续请求没法带
+                .exposedHeaders("Mcp-Session-Id");
     }
 
     @Override

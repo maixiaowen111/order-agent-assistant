@@ -173,8 +173,32 @@ class AgentLoopTest {
     }
 
     @Test
-    void 会话保存版本冲突时_返回提示不覆盖() {
-        // saveIfUnchanged 永远返回 false → 模拟"另一个请求抢先改了同一会话"（版本 CAS 失败）
+    void 会话保存版本冲突时_自动重试_回答不丢() {
+        // 第一次保存失败（模拟版本被并发请求改掉），自动重试：重读最新快照拼上本轮消息再存，第二次成功
+        AtomicInteger saves = new AtomicInteger();
+        InMemoryStore flaky = new InMemoryStore() {
+            @Override
+            public boolean saveIfUnchanged(String sessionId, List<Message> messages, int expectedVersion) {
+                return saves.incrementAndGet() < 2 ? false : super.saveIfUnchanged(sessionId, messages, expectedVersion);
+            }
+        };
+        AgentLoop loop = new AgentLoop(
+                new ScriptedLlm(List.of(new LlmResponse("查单结果：PAID", List.of()))),
+                List.of(QUERY), new AlwaysAllowGate(), flaky);
+
+        String answer = loop.chat("s1", 1L, "查一下订单");
+
+        // 回答没被丢弃：CAS 冲突自动重试后照常返回最终回答
+        assertThat(answer).isEqualTo("查单结果：PAID");
+        assertThat(saves.get()).isEqualTo(2);   // 冲突一次 → 自动重试一次
+        // 历史完整落盘：重试时重读最新快照 + 本轮新增，提问没丢
+        assertThat(flaky.data.get("s1")).anyMatch(m -> "user".equals(m.role())
+                && "查一下订单".equals(m.content()));
+    }
+
+    @Test
+    void 会话保存版本持续冲突_重试上限后_返回提示不覆盖() {
+        // saveIfUnchanged 永远返回 false → 模拟"另一个请求持续抢先改同一会话"（版本 CAS 一直失败）
         SessionStore conflicting = new InMemoryStore() {
             @Override
             public boolean saveIfUnchanged(String sessionId, List<Message> messages, int expectedVersion) {
@@ -187,7 +211,7 @@ class AgentLoopTest {
 
         String answer = loop.chat("s1", 1L, "查一下订单");
 
-        // 宁可本次回答不落盘，也不覆盖别人刚写下的历史——给用户可理解的重试提示
+        // 重试 3 次仍失败，才放弃并提示——宁可本次回答不落盘，也不覆盖别人刚写下的历史
         assertThat(answer).contains("冲突");
     }
 

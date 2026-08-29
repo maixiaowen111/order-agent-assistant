@@ -1,9 +1,11 @@
 package com.orderagent;
 
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
@@ -31,12 +33,12 @@ import java.util.Map;
  *   ② tools/list 列出全部工具（含写操作）；tools/call 的写工具走权限闸门，闭环如下：
  *      未批准 → 拦下（isError，正文带 sessionId 和 /approve 入口）→ 人工调 POST /approve 批准
  *      → 模型重试同一操作 → 闸门消费批准真正执行。MCP 层绝不能绕过人工批准去改数据。
- *      会话语义：MCP 无会话概念（无 Mcp-Session-Id 头），用可推导的命名空间会话
- *      "mcp-<userId>" 当 sessionId 复用 /approve 的批准通道——只放行内嵌 userId 与登录人
- *      一致的 mcp- 会话，别人拿你的 sessionId 照样批不了。
+ *   ③ 会话管理：每个 MCP 客户端 initialize 时由服务器签发独立会话（Mcp-Session-Id 响应头），
+ *      绑定登录用户（见 McpSessionRegistry），后续请求必须随头带回——
+ *      每个客户端一个 pending/批准槽互不干扰，/approve 又按绑定用户校验归属，
+ *      别人拿你的会话 id 批不了。会话 30 分钟不活跃过期，客户端重新 initialize。
  *
  * 明确不做（规范里对服务器都是可选能力，客户端照常工作）：
- *   会话管理（Mcp-Session-Id 头）——保持无状态；
  *   SSE 流式响应——规范允许服务器一律回 JSON。
  */
 @RestController
@@ -47,14 +49,19 @@ public class McpController {
 
     private final List<Tool> tools;
     private final WritePermissionGate gate;
+    private final McpSessionRegistry sessionRegistry;
 
-    public McpController(List<Tool> tools, WritePermissionGate gate) {
+    public McpController(List<Tool> tools, WritePermissionGate gate, McpSessionRegistry sessionRegistry) {
         this.tools = tools;
         this.gate = gate;
+        this.sessionRegistry = sessionRegistry;
     }
 
     @PostMapping("/mcp")
-    public ResponseEntity<Map<String, Object>> mcp(@RequestBody Map<String, Object> body) {
+    public ResponseEntity<Map<String, Object>> mcp(
+            @RequestBody Map<String, Object> body,
+            @RequestHeader(value = "Mcp-Session-Id", required = false) String sessionId,
+            HttpServletResponse response) {
         String method = body.get("method") instanceof String ? (String) body.get("method") : null;
         Object id = body.get("id");
 
@@ -68,12 +75,62 @@ public class McpController {
         }
 
         return switch (method) {
-            case "initialize" -> ResponseEntity.ok(rpc(id, initializeResult(params(body))));
+            case "initialize" -> handleInitialize(id, params(body), response);
             case "ping" -> ResponseEntity.ok(rpc(id, Map.of()));
-            case "tools/list" -> ResponseEntity.ok(rpc(id, Map.of("tools", listTools())));
-            case "tools/call" -> callTool(id, params(body));
+            case "tools/list" -> handleToolsList(id, sessionId);
+            case "tools/call" -> callTool(id, params(body), sessionId);
             default -> ResponseEntity.ok(rpcError(id, -32601, "Method not found: " + method));
         };
+    }
+
+    /**
+     * initialize：签发独立 MCP 会话并通过 Mcp-Session-Id 响应头交给客户端。
+     * 客户端必须随后续请求带回该头（规范约定），服务器据此区分"是哪个客户端"。
+     */
+    private ResponseEntity<Map<String, Object>> handleInitialize(Object id, Map<String, Object> params,
+                                                                 HttpServletResponse response) {
+        Long userId = AgentUserContext.get();
+        if (userId == null) {
+            return ResponseEntity.ok(rpcError(id, -32001, "未登录：/mcp 需要 Authorization: Bearer <JWT>"));
+        }
+        String sid = sessionRegistry.create(userId);
+        response.setHeader("Mcp-Session-Id", sid);
+        return ResponseEntity.ok(rpc(id, initializeResult(params)));
+    }
+
+    private ResponseEntity<Map<String, Object>> handleToolsList(Object id, String sessionId) {
+        ResponseEntity<Map<String, Object>> sessionErr = requireSession(id, sessionId);
+        if (sessionErr != null) {
+            return sessionErr;
+        }
+        return ResponseEntity.ok(rpc(id, Map.of("tools", listTools())));
+    }
+
+    /**
+     * 除 initialize/通知外的所有方法都必须携带已绑定登录用户的 Mcp-Session-Id：
+     *   没带/带错 → 客户端没先握手或会话已过期，返回 JSON-RPC 错误；
+     *   带了但绑定的用户 ≠ 当前登录人 → 会话与凭证不匹配，拒绝（防止拿别人的会话干活）。
+     * 校验通过时顺带续期（touch），活跃会话不因 30 分钟 TTL 过期。
+     * 返回 null = 通过；返回非 null = 应回给客户端的错误响应。
+     */
+    private ResponseEntity<Map<String, Object>> requireSession(Object id, String sessionId) {
+        Long userId = AgentUserContext.get();
+        if (userId == null) {
+            return ResponseEntity.ok(rpcError(id, -32001, "未登录：/mcp 需要 Authorization: Bearer <JWT>"));
+        }
+        if (sessionId == null || sessionId.isBlank()) {
+            return ResponseEntity.ok(rpcError(id, -32001,
+                    "会话缺失：请先调用 initialize 获取 Mcp-Session-Id 并随后续请求携带"));
+        }
+        Long owner = sessionRegistry.touch(sessionId);
+        if (owner == null) {
+            return ResponseEntity.ok(rpcError(id, -32001, "会话不存在或已过期：请重新 initialize"));
+        }
+        if (!owner.equals(userId)) {
+            return ResponseEntity.ok(rpcError(id, -32001,
+                    "会话与当前登录用户不符：请使用该会话绑定的账号重新登录"));
+        }
+        return null;
     }
 
     /** initialize 结果：协议版本协商 + 能力声明 + 服务信息 + 使用说明。 */
@@ -107,14 +164,14 @@ public class McpController {
     }
 
     /** tools/call：只读工具直接执行；写工具走闸门（未批准拦下 / 已批准执行）。 */
-    private ResponseEntity<Map<String, Object>> callTool(Object id, Map<String, Object> params) {
-        // 纵深防御：拦截器已保证 /mcp 有 Bearer token，这里再确认用户身份在上下文中。
-        // 工具调用链（OrderSystemApiClient）靠 AgentUserContext 决定带不带 X-User-Id——
-        // 没有它，内部接口查订单会因缺少用户身份被拒。
-        Long userId = AgentUserContext.get();
-        if (userId == null) {
-            return ResponseEntity.ok(rpcError(id, -32001, "未登录：/mcp 需要 Authorization: Bearer <JWT>"));
+    private ResponseEntity<Map<String, Object>> callTool(Object id, Map<String, Object> params, String sessionId) {
+        // 会话校验：必须带 initialize 签发的 Mcp-Session-Id 且绑定当前登录用户。
+        // 顺带续期；失败返回 JSON-RPC 错误，不执行任何工具（含只读——查订单也不能匿名）。
+        ResponseEntity<Map<String, Object>> sessionErr = requireSession(id, sessionId);
+        if (sessionErr != null) {
+            return sessionErr;
         }
+        Long userId = AgentUserContext.get();
 
         String name = params.get("name") == null ? "" : String.valueOf(params.get("name"));
         @SuppressWarnings("unchecked")
@@ -128,10 +185,10 @@ public class McpController {
         }
 
         // 写操作：MCP 层也走闸门，防止绕过人工批准直接改数据。
-        // MCP 无会话概念，用可推导的命名空间会话 "mcp-<userId>" 当 sessionId：
+        // 会话语义：用本客户端 initialize 时签发的 Mcp-Session-Id 当 sessionId——
+        //   每个客户端一个 pending/批准槽，互不干扰；/approve 按绑定用户校验归属。
         //   未批准 → blocks() 拦下并记住 pending → 返回 isError + 批准入口（含 sessionId）
         //   已批准 → blocks() 原子消费批准返回 false → 真正执行 → afterToolExecuted 通知闸门
-        String sessionId = "mcp-" + userId;
         ToolCall call = new ToolCall(String.valueOf(id), name, args);
         if (!tool.readOnly()) {
             if (gate.blocks(call, sessionId, userId)) {

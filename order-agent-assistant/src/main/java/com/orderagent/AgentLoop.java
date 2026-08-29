@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -27,6 +28,9 @@ public class AgentLoop {
     private final PermissionGate gate;
     private final SessionStore store;
     private final int maxSteps;
+
+    /** 会话保存乐观锁冲突时最多重试次数（与 markApproved 的重试上限一致） */
+    private static final int MAX_SAVE_ATTEMPTS = 3;
 
     /** 兜底构造：测试或没配 agent.max-steps 时用默认 8 步 */
     public AgentLoop(LlmClient client, List<Tool> tools, PermissionGate gate, SessionStore store) {
@@ -50,6 +54,11 @@ public class AgentLoop {
         SessionSnapshot snapshot = store.getOrCreate(sessionId);
         List<Message> messages = snapshot.messages();
         messages.add(Message.user(userInput));
+
+        // 本轮新增的消息单独记一份：保存冲突重试时，拿"最新快照 + 本轮新增"重新拼接落盘，
+        // 既保留并发请求刚写下的历史（绝不覆盖对方），也保证本轮的提问/工具结果/回答不丢。
+        List<Message> pending = new ArrayList<>();
+        pending.add(Message.user(userInput));
 
         // 一次执行的上下文：sessionId / 提问 / 开始时间 / 步数都装在里面，日志统一取数
         AgentExecutionContext ctx = new AgentExecutionContext(sessionId, userInput);
@@ -76,6 +85,7 @@ public class AgentLoop {
                 break;
             }
             messages.add(Message.assistant(resp));
+            pending.add(Message.assistant(resp));
             log.info("模型要调工具 step={} sessionId={} elapsedMs={} tools={}",
                     step, ctx.sessionId(), ctx.elapsedMs(),
                     resp.toolCalls().stream().map(ToolCall::name).toList());
@@ -85,12 +95,14 @@ public class AgentLoop {
                 if (toolStep > maxSteps) {
                     budgetExhausted = true;
                     messages.add(Message.tool(call.id(), "已达到最大执行步数，已停止执行，请直接给出最终答复。"));
+                    pending.add(Message.tool(call.id(), "已达到最大执行步数，已停止执行，请直接给出最终答复。"));
                     log.info("工具未执行 step={} sessionId={} tool={} 原因=步数耗尽",
                             toolStep, ctx.sessionId(), call.name());
                     continue;
                 }
                 String result = executeTool(call, sessionId, userId);
                 messages.add(Message.tool(call.id(), result));
+                pending.add(Message.tool(call.id(), result));
                 log.info("工具执行 step={} sessionId={} elapsedMs={} tool={} args={} result={}",
                         toolStep, ctx.sessionId(), ctx.elapsedMs(), call.name(),
                         LogSanitizer.sanitizeArgs(call.args()), LogSanitizer.maskText(result));
@@ -105,9 +117,19 @@ public class AgentLoop {
         }
 
         // 一次对话结束，把完整历史写回存储（乐观锁：版本没被别人改掉才落盘）。
-        // 保存失败说明有另一个请求抢先改了同一会话——宁可本次回答不落盘，也不覆盖对方的历史（丢消息）。
-        if (!store.saveIfUnchanged(sessionId, messages, snapshot.version())) {
-            log.warn("会话保存冲突：有并发请求同时改了该会话，本次不保存以免覆盖。sessionId={}", sessionId);
+        // 保存冲突不直接丢弃本轮回答：最多重试 3 次，每次重读最新快照、拼上本轮新增消息
+        // 再保存——对方刚写下的历史原样保留（不覆盖），本轮的提问/工具结果/回答也不丢。
+        // 重试仍失败说明会话被持续并发修改，才放弃并提示用户重试。
+        boolean saved = false;
+        for (int attempt = 0; attempt < MAX_SAVE_ATTEMPTS && !saved; attempt++) {
+            SessionSnapshot latest = store.getOrCreate(sessionId);
+            List<Message> toSave = new ArrayList<>(latest.messages());
+            toSave.addAll(pending);
+            saved = store.saveIfUnchanged(sessionId, toSave, latest.version());
+        }
+        if (!saved) {
+            log.warn("会话保存冲突：重试 {} 次后仍有并发请求修改该会话，本次不保存以免覆盖。sessionId={}",
+                    MAX_SAVE_ATTEMPTS, sessionId);
             return "您的请求和另一个同时进行的请求冲突了，为避免聊天记录互相覆盖，本次回答未保存，请稍后重试。";
         }
         log.info("请求结束 sessionId={} elapsedMs={} finalStatus={}",

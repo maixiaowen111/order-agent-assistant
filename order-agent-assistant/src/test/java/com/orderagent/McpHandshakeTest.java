@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,9 @@ import static org.mockito.Mockito.when;
  * 严格 MCP 客户端握手模拟：按 TypeScript SDK 客户端（Claude Desktop / Cursor 底层）
  * 的真实顺序，逐步断言 HTTP 状态码和 JSON-RPC body。证明 /mcp 能过严格客户端握手。
  *
+ * 会话行为：initialize 时服务器签发独立 Mcp-Session-Id（响应头），严格客户端把它存下、
+ * 随后续每个请求带回——这里忠实模拟这一步，并断言服务器按绑定用户放行。
+ *
  * 注册 4 个工具镜像真实应用：2 个只读（query_product_stock / query_order）
  * + 2 个写（update_order_address / cancel_order）。
  * 整个 /mcp 都要登录：AgentUserContext 里先放好身份，模拟拦截器已从 Bearer JWT 解析出 userId。
@@ -33,6 +37,7 @@ class McpHandshakeTest {
     private Tool updateAddress;
     private Tool cancelOrder;
     private WritePermissionGate gate;
+    private McpSessionRegistry registry;
     private McpController controller;
 
     @BeforeEach
@@ -51,7 +56,11 @@ class McpHandshakeTest {
         // 默认：写工具被拦（未批准）——"批准后重试"用例明确覆写 blocks 才放行
         when(gate.blocks(any(), anyString(), any())).thenReturn(true);
 
-        controller = new McpController(List.of(queryStock, queryOrder, updateAddress, cancelOrder), gate);
+        registry = mock(McpSessionRegistry.class);
+        when(registry.create(1L)).thenReturn("mcp-handshake-1");
+        when(registry.touch("mcp-handshake-1")).thenReturn(1L);
+
+        controller = new McpController(List.of(queryStock, queryOrder, updateAddress, cancelOrder), gate, registry);
     }
 
     @AfterEach
@@ -68,14 +77,23 @@ class McpHandshakeTest {
         return t;
     }
 
-    /** 客户端发一个 JSON-RPC 请求，返回服务器响应（内部复用 controller.mcp）。 */
+    /** 模拟客户端：持有一个会话 id（initialize 后填充），每次请求随头带回。 */
+    private String sid;
+
     private ResponseEntity<Map<String, Object>> send(Map<String, Object> msg) {
-        return controller.mcp(msg);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        ResponseEntity<Map<String, Object>> resp = controller.mcp(msg, sid, response);
+        String issued = response.getHeader("Mcp-Session-Id");
+        if (issued != null) {
+            // 服务器在 initialize 响应头里签发的会话 id，客户端存下并随后续请求带回
+            sid = issued;
+        }
+        return resp;
     }
 
     @Test
     void 完整握手_严格客户端可连接() {
-        // 1. initialize：客户端宣告协议版本 2025-06-18
+        // 1. initialize：客户端宣告协议版本 2025-06-18，服务器签发会话
         ResponseEntity<Map<String, Object>> init = send(Map.of(
                 "jsonrpc", "2.0", "id", 1, "method", "initialize",
                 "params", Map.of(
@@ -88,6 +106,9 @@ class McpHandshakeTest {
         assertThat(initResult.get("protocolVersion")).isEqualTo("2025-06-18");
         assertThat((Map<String, Object>) initResult.get("capabilities")).containsKey("tools");
         assertThat((Map<String, Object>) initResult.get("serverInfo")).containsEntry("name", "order-agent");
+        // 服务器签发了独立会话，客户端存下了它
+        assertThat(sid).isEqualTo("mcp-handshake-1");
+        verify(registry).create(1L);
 
         // 2. 握手完发初始化完成通知 → 规范要求 202 Accepted 空 body
         ResponseEntity<Map<String, Object>> ack = send(Map.of("method", "notifications/initialized"));
@@ -107,6 +128,8 @@ class McpHandshakeTest {
             Map<String, Object> spec = (Map<String, Object>) t;
             assertThat(spec).containsKeys("name", "description", "inputSchema");
         });
+        // 服务器按会话校验了绑定用户并续期
+        verify(registry).touch("mcp-handshake-1");
 
         // 4. tools/call 只读工具 → 200 + content 结果
         ResponseEntity<Map<String, Object>> call = send(Map.of(
@@ -128,16 +151,22 @@ class McpHandshakeTest {
         Map<String, Object> writeResult = (Map<String, Object>) write.getBody().get("result");
         assertThat(writeResult.get("isError")).isEqualTo(true);
         assertThat(String.valueOf(writeResult.get("content"))).contains("写操作被拦截");
-        // 拦下时带批准入口和 MCP 会话 sessionId（mcp-<userId>），客户端拿它去 /approve
-        assertThat(String.valueOf(writeResult.get("content"))).contains("/approve").contains("mcp-1");
+        // 拦下时带批准入口和本客户端会话 sessionId（客户端拿它去 /approve）
+        assertThat(String.valueOf(writeResult.get("content"))).contains("/approve").contains("mcp-handshake-1");
         verify(updateAddress, never()).run(any());
         verify(cancelOrder, never()).run(any());
         verify(gate).reason(any());
-        verify(gate).blocks(any(), eq("mcp-1"), eq(1L));
+        verify(gate).blocks(any(), eq("mcp-handshake-1"), eq(1L));
     }
 
     @Test
     void 写工具批准后_重试同参数_真正执行并通知闸门() {
+        // 严格客户端：先 initialize 拿到会话，再发 tools/call
+        send(Map.of(
+                "jsonrpc", "2.0", "id", 1, "method", "initialize",
+                "params", Map.of("protocolVersion", "2025-06-18")));
+        assertThat(sid).isEqualTo("mcp-handshake-1");
+
         when(gate.blocks(any(), anyString(), any())).thenReturn(false);  // 已批准 → 放行
         when(updateAddress.run(any())).thenReturn("订单 2026 收货地址已更新为上海市浦东新区");
 
@@ -153,6 +182,7 @@ class McpHandshakeTest {
         assertThat(String.valueOf(writeResult.get("content"))).contains("地址已更新");
         verify(updateAddress).run(Map.of("orderNo", "2026", "address", "上海市浦东新区"));
         // 一次性批准执行完要通知闸门消费（防一次批准反复复用）
-        verify(gate).afterToolExecuted(any(), eq("mcp-1"), eq(1L), eq("订单 2026 收货地址已更新为上海市浦东新区"));
+        verify(gate).afterToolExecuted(any(), eq("mcp-handshake-1"), eq(1L),
+                eq("订单 2026 收货地址已更新为上海市浦东新区"));
     }
 }
