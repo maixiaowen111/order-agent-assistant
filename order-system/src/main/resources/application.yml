@@ -26,6 +26,12 @@ app:
 server:
   port: 8080
 
+# JWT 签名密钥：优先读环境变量 JWT_SECRET，没配用开发默认值。
+# order-agent-assistant 的 AgentJwtService 用同一个环境变量——两边同钥才能验同一张签。
+# 生产必须设 JWT_SECRET，别用默认值。
+jwt:
+  secret: ${JWT_SECRET:MyOrderSystemSecretKeyForJwtToken2024!!!}
+
 # MyBatis-Plus 通用配置
 mybatis-plus:
   # 实体类扫描包路径

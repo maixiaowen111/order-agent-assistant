@@ -7,7 +7,9 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/order_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
-    password: 123456
+    # 密码不写死在仓库里：从环境变量 DB_PASSWORD 读，没配启动直接报错。
+    # 本地跑：export DB_PASSWORD=你的密码；docker compose 由 .env 注入。
+    password: ${DB_PASSWORD}
   redis:
     host: localhost
     port: 6379
@@ -27,6 +29,7 @@ logging:
     org.redisson: WARN             # Redisson 静音
 
 # 内部接口密钥：order-agent-assistant 调 /internal/** 时要带的 X-Internal-Key
-# 两边要保持一致（agent 的 application.yml 里 order-system.internal-key 填同样的值）
+# 从环境变量 INTERNAL_API_KEY 读，不写死在仓库里。两边要保持一致
+#（agent 的 order-system.internal-key 也读同一个环境变量）。docker compose 由 .env 注入。
 internal-api:
-  key: order-agent-internal-key-2026
+  key: ${INTERNAL_API_KEY}

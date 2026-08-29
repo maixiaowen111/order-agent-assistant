@@ -29,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 
       private final UserMapper userMapper;
       private final RedisTemplate<String, Object> redisTemplate;
+      private final JwtUtil jwtUtil;
 
       // BCrypt 密码加密器
       private static final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
@@ -79,7 +80,7 @@ import java.util.concurrent.TimeUnit;
           log.info("用户登录成功，username={}", user.getUsername());
 
           // 3. 生成 JWT Token
-          String token = JwtUtil.generate(user.getId(), user.getUsername(), user.getRole());
+          String token = jwtUtil.generate(user.getId(), user.getUsername(), user.getRole());
 
           // 4. 返回 UserVO（含 Token）
           UserVO vo = toUserVO(user);
@@ -92,7 +93,7 @@ import java.util.concurrent.TimeUnit;
           // 将当前时间戳写入 Redis，所有签发时间早于此值的 Token 全部失效
           long now = System.currentTimeMillis();
           redisTemplate.opsForValue()
-                  .set(JwtUtil.blacklistKey(userId), now, 24, TimeUnit.HOURS);
+                  .set(jwtUtil.blacklistKey(userId), now, 24, TimeUnit.HOURS);
           log.info("用户退出登录，userId={}, 旧 Token 已全部失效", userId);
       }
 

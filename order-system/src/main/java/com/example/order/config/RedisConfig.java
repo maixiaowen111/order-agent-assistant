@@ -31,10 +31,17 @@ public class RedisConfig {
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
         mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        // 启用默认类型推断，JSON 中包含 @class 字段，反序列化时自动识别类型
-        // allowIfBaseType(Object.class) 允许所有 Java 类型的序列化/反序列化
+        // 启用默认类型推断，JSON 中包含 @class 字段，反序列化时自动识别类型。
+        // 白名单严格限定：只认「本项目自己的包 + JDK 标准库」。之前 allowIfBaseType(Object.class)
+        // 等于反序列化时接受任意类，攻击者一旦能往缓存里塞数据，就能让 Jackson 加载任意类触发
+        // 反序列化攻击（gadget）。实际缓存里只出现过：ProductVO、BigDecimal、LocalDateTime，
+        // 全部落在白名单内，功能不受影响。
         PolymorphicTypeValidator ptv = BasicPolymorphicTypeValidator.builder()
-                .allowIfBaseType(Object.class)
+                .allowIfSubType("com.example.order.")
+                .allowIfSubType("java.util.")
+                .allowIfSubType("java.time.")
+                .allowIfSubType("java.math.")
+                .allowIfSubType("java.lang.")
                 .build();
         mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL);
         return mapper;

@@ -37,6 +37,7 @@ import javax.servlet.http.HttpServletResponse;
 public class LoginInterceptor implements HandlerInterceptor {
 
     private final RedisTemplate<String, Object> redisTemplate;
+    private final JwtUtil jwtUtil;
 
     /**
      * Controller 执行前调用
@@ -75,7 +76,7 @@ public class LoginInterceptor implements HandlerInterceptor {
 
         // 3. 解析 Token
         try {
-            Claims claims = JwtUtil.parse(token);
+            Claims claims = jwtUtil.parse(token);
             Long userId = Long.valueOf(claims.getSubject());
             String username = claims.get("username", String.class);
             String role = claims.get("role", String.class);
@@ -83,7 +84,7 @@ public class LoginInterceptor implements HandlerInterceptor {
             // 4. 黑名单检查：Token 签发时间 < 黑名单记录时间 = 已失效
             //    场景：用户退出登录 / 修改密码后，之前签发的所有 Token 都不再有效
             Long blacklistTime = (Long) redisTemplate.opsForValue()
-                    .get(JwtUtil.blacklistKey(userId));
+                    .get(jwtUtil.blacklistKey(userId));
             if (blacklistTime != null) {
                 long iat = claims.getIssuedAt().getTime();
                 if (iat < blacklistTime) {

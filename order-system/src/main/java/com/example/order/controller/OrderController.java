@@ -1,6 +1,7 @@
 package com.example.order.controller;
 
   import com.example.order.common.Result;
+  import com.example.order.context.UserContext;
   import com.example.order.dto.CreateOrderDTO;
   import com.example.order.service.OrderService;
   import com.example.order.vo.OrderVO;
@@ -31,7 +32,8 @@ package com.example.order.controller;
 
       @GetMapping("/{id}")
       public Result<OrderVO> detail(@PathVariable Long id) {
-          OrderVO vo = orderService.detail(id);
+          // 归属校验：只能看自己的订单（登录拦截器保证 userId 非空）
+          OrderVO vo = orderService.detail(id, UserContext.getUserId());
           return Result.success(vo);
       }
 
@@ -43,13 +45,13 @@ package com.example.order.controller;
 
       @PutMapping("/{id}/pay")
       public Result<Void> pay(@PathVariable Long id) {
-          orderService.pay(id);
+          orderService.pay(id, UserContext.getUserId());
           return Result.success();
       }
 
       @PutMapping("/{id}/cancel")
       public Result<Void> cancel(@PathVariable Long id) {
-          orderService.cancel(id);
+          orderService.cancel(id, UserContext.getUserId());
           return Result.success();
       }
   }
