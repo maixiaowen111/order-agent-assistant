@@ -16,9 +16,9 @@ import java.time.LocalDateTime;
  *   后续由异步线程 + 定时任务兜底扫描处理。
  *
  * 状态流转：
- *   WAIT → PROCESSING → SUCCESS
- *   WAIT → PROCESSING → WAIT（失败，等待重试）
- *   WAIT → PROCESSING → WAIT → ... → FAIL（超过 max_retry）
+ *   WAIT → SENDING → SUCCESS
+ *   WAIT → SENDING → WAIT（失败，等待重试）
+ *   WAIT → SENDING → WAIT → ... → FAIL（超过 max_retry）
  */
 @Data
 @TableName("t_event_record")
@@ -36,8 +36,14 @@ public class EventRecord {
     /** 事件数据（JSON），不同事件存放不同参数 */
     private String eventData;
 
-    /** 状态：WAIT / PROCESSING / SUCCESS / FAIL */
+    /** 状态：WAIT / SENDING / SUCCESS / FAIL */
     private String status;
+
+    /** 领取处理权的实例标识（多实例部署时标记"谁在处理"，崩溃回收依据之一） */
+    private String claimOwner;
+
+    /** 领取时间：SENDING 僵尸判定用它（在途事件被误回收的修复点） */
+    private LocalDateTime claimedAt;
 
     /** 已重试次数 */
     private Integer retryCount;

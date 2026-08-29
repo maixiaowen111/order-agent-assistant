@@ -70,6 +70,31 @@ CREATE TABLE `t_cart`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 16 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '购物车表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
+-- Table structure for t_event_record
+-- ----------------------------
+DROP TABLE IF EXISTS `t_event_record`;
+CREATE TABLE `t_event_record`  (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `order_no` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '关联订单号',
+  `event_type` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '事件类型：POINTS-积分 SMS-短信 NOTIFY-推送 REFUND-退款',
+  `event_data` text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL COMMENT '事件数据（JSON），存放处理所需参数',
+  `status` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT 'WAIT' COMMENT '状态：WAIT-待处理 SENDING-处理中 SUCCESS-成功 FAIL-超过重试上限',
+  `retry_count` int NOT NULL DEFAULT 0 COMMENT '已重试次数',
+  `max_retry` int NOT NULL DEFAULT 3 COMMENT '最大重试次数',
+  `next_retry_time` datetime NULL DEFAULT NULL COMMENT '下次重试时间',
+  `error_msg` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '最后一次失败原因',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `claim_owner` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '领取处理权的实例标识（多实例部署标记谁在处理，崩溃回收依据）',
+  `claimed_at` datetime NULL DEFAULT NULL COMMENT '领取时间（SENDING 僵尸判定依据：在途超时才回收）',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `idx_order_no`(`order_no` ASC) USING BTREE,
+  INDEX `idx_status_next_retry`(`status` ASC, `next_retry_time` ASC) USING BTREE,
+  UNIQUE INDEX `uk_order_event`(`order_no` ASC, `event_type` ASC) USING BTREE COMMENT '同订单同类型事件唯一，防重复通知',
+  INDEX `idx_status_claimed_at`(`status` ASC, `claimed_at` ASC) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 10 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '本地事件记录表' ROW_FORMAT = Dynamic;
+
+-- ----------------------------
 -- Table structure for t_order
 -- ----------------------------
 DROP TABLE IF EXISTS `t_order`;
@@ -85,10 +110,12 @@ CREATE TABLE `t_order`  (
   `deleted` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `client_request_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '客户端请求幂等键（网络重试防重复下单，唯一索引允许多个NULL）',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `uk_order_no`(`order_no` ASC) USING BTREE,
   INDEX `idx_user_id`(`user_id` ASC) USING BTREE,
-  INDEX `idx_status`(`status` ASC) USING BTREE
+  INDEX `idx_status`(`status` ASC) USING BTREE,
+  UNIQUE INDEX `uk_client_request_id`(`client_request_id` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 21 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '订单表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------

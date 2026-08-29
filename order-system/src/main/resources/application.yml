@@ -3,11 +3,7 @@
 # 作用：通用配置 + 指定激活的环境
 # ============================================
 
-# 激活开发环境配置
 spring:
-  profiles:
-    active: dev
-
   # 应用名称（微服务阶段会用到，先配好）
   application:
     name: order-system

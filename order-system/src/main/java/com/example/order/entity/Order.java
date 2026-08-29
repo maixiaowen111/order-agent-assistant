@@ -29,6 +29,9 @@ package com.example.order.entity;
 
       private String receiverAddress;
 
+      /** 客户端幂等键（可选）：t_order.client_request_id，唯一索引防网络重试重复下单 */
+      private String clientRequestId;
+
       private Integer deleted;
 
       private LocalDateTime createTime;

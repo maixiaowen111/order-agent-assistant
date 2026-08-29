@@ -26,7 +26,6 @@ logging:
     com.example.order: DEBUG       # 只显示项目代码的日志
     com.baomidou.mybatisplus: WARN # MyBatis-Plus 静音
     org.springframework: WARN      # Spring 静音
-    org.redisson: WARN             # Redisson 静音
 
 # 内部接口密钥：order-agent-assistant 调 /internal/** 时要带的 X-Internal-Key
 # 从环境变量 INTERNAL_API_KEY 读；本地开发没设时用下面的开发默认值（agent 侧同款默认值，两边自动配对）。

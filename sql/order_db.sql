@@ -52,10 +52,13 @@ CREATE TABLE `t_event_record`  (
   `error_msg` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '最后一次失败原因',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `claim_owner` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '领取处理权的实例标识（多实例部署标记谁在处理，崩溃回收依据）',
+  `claimed_at` datetime NULL DEFAULT NULL COMMENT '领取时间（SENDING 僵尸判定依据：在途超时才回收）',
   PRIMARY KEY (`id`) USING BTREE,
   INDEX `idx_order_no`(`order_no` ASC) USING BTREE,
   INDEX `idx_status_next_retry`(`status` ASC, `next_retry_time` ASC) USING BTREE,
-  UNIQUE INDEX `uk_order_event`(`order_no` ASC, `event_type` ASC) USING BTREE COMMENT '同订单同类型事件唯一，防重复通知'
+  UNIQUE INDEX `uk_order_event`(`order_no` ASC, `event_type` ASC) USING BTREE COMMENT '同订单同类型事件唯一，防重复通知',
+  INDEX `idx_status_claimed_at`(`status` ASC, `claimed_at` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 10 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '本地事件记录表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
@@ -77,15 +80,15 @@ CREATE TABLE `t_notification`  (
 -- ----------------------------
 -- Records of t_event_record
 -- ----------------------------
-INSERT INTO `t_event_record` VALUES (1, '202608041909409c300e', 'POINTS', '{\"amount\":26997.00,\"userId\":1}', 'SUCCESS', 0, 3, '2026-08-04 19:09:41', NULL, '2026-08-04 19:09:40', '2026-08-04 19:13:57');
-INSERT INTO `t_event_record` VALUES (2, '202608041909409c300e', 'SMS', '{\"receiverName\":\"牛战士\",\"phone\":\"13800138000\"}', 'SUCCESS', 0, 3, '2026-08-04 19:09:41', NULL, '2026-08-04 19:09:40', '2026-08-04 19:09:40');
-INSERT INTO `t_event_record` VALUES (3, '202608041909409c300e', 'NOTIFY', '{\"orderNo\":\"202608041909409c300e\",\"userId\":1}', 'SUCCESS', 0, 3, '2026-08-04 19:09:41', NULL, '2026-08-04 19:09:40', '2026-08-04 19:09:40');
-INSERT INTO `t_event_record` VALUES (4, '20260806185649de7fd2', 'POINTS', '{\"amount\":8999.00,\"userId\":3}', 'SUCCESS', 0, 3, '2026-08-06 18:56:50', NULL, '2026-08-06 18:56:49', '2026-08-06 18:56:49');
-INSERT INTO `t_event_record` VALUES (5, '20260806185649de7fd2', 'SMS', '{\"receiverName\":\"张三\",\"phone\":\"13800138000\"}', 'SUCCESS', 0, 3, '2026-08-06 18:56:50', NULL, '2026-08-06 18:56:50', '2026-08-06 18:56:50');
-INSERT INTO `t_event_record` VALUES (6, '20260806185649de7fd2', 'NOTIFY', '{\"orderNo\":\"20260806185649de7fd2\",\"userId\":3}', 'SUCCESS', 0, 3, '2026-08-06 18:56:50', NULL, '2026-08-06 18:56:50', '2026-08-06 18:56:50');
-INSERT INTO `t_event_record` VALUES (7, '202608071720206c1a28', 'POINTS', '{\"userId\":3,\"amount\":10998.00}', 'SUCCESS', 0, 3, '2026-08-07 17:20:21', NULL, '2026-08-07 17:20:20', '2026-08-07 17:20:20');
-INSERT INTO `t_event_record` VALUES (8, '202608071720206c1a28', 'SMS', '{\"phone\":\"17513702810\",\"receiverName\":\"牛\"}', 'SUCCESS', 0, 3, '2026-08-07 17:20:21', NULL, '2026-08-07 17:20:20', '2026-08-07 17:20:20');
-INSERT INTO `t_event_record` VALUES (9, '202608071720206c1a28', 'NOTIFY', '{\"userId\":3,\"orderNo\":\"202608071720206c1a28\"}', 'SUCCESS', 0, 3, '2026-08-07 17:20:21', NULL, '2026-08-07 17:20:20', '2026-08-07 17:20:20');
+INSERT INTO `t_event_record` VALUES (1, '202608041909409c300e', 'POINTS', '{\"amount\":26997.00,\"userId\":1}', 'SUCCESS', 0, 3, '2026-08-04 19:09:41', NULL, '2026-08-04 19:09:40', '2026-08-04 19:13:57', NULL, NULL);
+INSERT INTO `t_event_record` VALUES (2, '202608041909409c300e', 'SMS', '{\"receiverName\":\"牛战士\",\"phone\":\"13800138000\"}', 'SUCCESS', 0, 3, '2026-08-04 19:09:41', NULL, '2026-08-04 19:09:40', '2026-08-04 19:09:40', NULL, NULL);
+INSERT INTO `t_event_record` VALUES (3, '202608041909409c300e', 'NOTIFY', '{\"orderNo\":\"202608041909409c300e\",\"userId\":1}', 'SUCCESS', 0, 3, '2026-08-04 19:09:41', NULL, '2026-08-04 19:09:40', '2026-08-04 19:09:40', NULL, NULL);
+INSERT INTO `t_event_record` VALUES (4, '20260806185649de7fd2', 'POINTS', '{\"amount\":8999.00,\"userId\":3}', 'SUCCESS', 0, 3, '2026-08-06 18:56:50', NULL, '2026-08-06 18:56:49', '2026-08-06 18:56:49', NULL, NULL);
+INSERT INTO `t_event_record` VALUES (5, '20260806185649de7fd2', 'SMS', '{\"receiverName\":\"张三\",\"phone\":\"13800138000\"}', 'SUCCESS', 0, 3, '2026-08-06 18:56:50', NULL, '2026-08-06 18:56:50', '2026-08-06 18:56:50', NULL, NULL);
+INSERT INTO `t_event_record` VALUES (6, '20260806185649de7fd2', 'NOTIFY', '{\"orderNo\":\"20260806185649de7fd2\",\"userId\":3}', 'SUCCESS', 0, 3, '2026-08-06 18:56:50', NULL, '2026-08-06 18:56:50', '2026-08-06 18:56:50', NULL, NULL);
+INSERT INTO `t_event_record` VALUES (7, '202608071720206c1a28', 'POINTS', '{\"userId\":3,\"amount\":10998.00}', 'SUCCESS', 0, 3, '2026-08-07 17:20:21', NULL, '2026-08-07 17:20:20', '2026-08-07 17:20:20', NULL, NULL);
+INSERT INTO `t_event_record` VALUES (8, '202608071720206c1a28', 'SMS', '{\"phone\":\"17513702810\",\"receiverName\":\"牛\"}', 'SUCCESS', 0, 3, '2026-08-07 17:20:21', NULL, '2026-08-07 17:20:20', '2026-08-07 17:20:20', NULL, NULL);
+INSERT INTO `t_event_record` VALUES (9, '202608071720206c1a28', 'NOTIFY', '{\"userId\":3,\"orderNo\":\"202608071720206c1a28\"}', 'SUCCESS', 0, 3, '2026-08-07 17:20:21', NULL, '2026-08-07 17:20:20', '2026-08-07 17:20:20', NULL, NULL);
 
 -- ----------------------------
 -- Table structure for t_message
@@ -126,35 +129,37 @@ CREATE TABLE `t_order`  (
   `deleted` tinyint NOT NULL DEFAULT 0 COMMENT '逻辑删除',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `client_request_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL DEFAULT NULL COMMENT '客户端请求幂等键（网络重试防重复下单，唯一索引允许多个NULL）',
   PRIMARY KEY (`id`) USING BTREE,
   UNIQUE INDEX `uk_order_no`(`order_no` ASC) USING BTREE,
   INDEX `idx_user_id`(`user_id` ASC) USING BTREE,
-  INDEX `idx_status`(`status` ASC) USING BTREE
+  INDEX `idx_status`(`status` ASC) USING BTREE,
+  UNIQUE INDEX `uk_client_request_id`(`client_request_id` ASC) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 21 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci COMMENT = '订单表' ROW_FORMAT = Dynamic;
 
 -- ----------------------------
 -- Records of t_order
 -- ----------------------------
-INSERT INTO `t_order` VALUES (1, '2026073113563149f68e', 1, 69990.00, 'PAID', '张三', '13800138000', '北京市朝阳区望京SOHO', 0, '2026-07-31 13:56:31', '2026-07-31 13:56:31');
-INSERT INTO `t_order` VALUES (2, '20260802150040e623c2', 1, 8999.00, 'WAIT_PAY', '张三', '13800138000', '北京市朝阳区', 0, '2026-08-02 15:00:40', '2026-08-02 15:00:40');
-INSERT INTO `t_order` VALUES (3, '2026080215331861b77e', 1, 8999.00, 'WAIT_PAY', '张三', '13800138000', '北京市朝阳区', 0, '2026-08-02 15:33:18', '2026-08-02 15:33:18');
-INSERT INTO `t_order` VALUES (4, '202608021615418d0ae8', 1, 8999.00, 'WAIT_PAY', 'A', '1', 'a', 0, '2026-08-02 16:15:41', '2026-08-02 16:15:41');
-INSERT INTO `t_order` VALUES (5, '20260802163208869d31', 1, 8999.00, 'WAIT_PAY', 'A', '1', 'a', 0, '2026-08-02 16:32:08', '2026-08-02 16:32:08');
-INSERT INTO `t_order` VALUES (6, '202608021637569bd5a3', 1, 8999.00, 'WAIT_PAY', '牛战士', '13800138000', '小屯', 0, '2026-08-02 16:37:56', '2026-08-02 16:37:56');
-INSERT INTO `t_order` VALUES (7, '20260802164428081430', 1, 8999.00, 'WAIT_PAY', 'A', '1', 'a', 0, '2026-08-02 16:44:28', '2026-08-02 16:44:28');
-INSERT INTO `t_order` VALUES (8, '20260802164429a71945', 1, 8999.00, 'WAIT_PAY', 'B', '2', 'b', 0, '2026-08-02 16:44:29', '2026-08-02 16:44:29');
-INSERT INTO `t_order` VALUES (9, '2026080221553451552c', 1, 1999.00, 'WAIT_PAY', '张三', '13800138000', '小屯', 0, '2026-08-02 21:55:34', '2026-08-02 21:55:34');
-INSERT INTO `t_order` VALUES (10, '202608041909409c300e', 1, 26997.00, 'WAIT_PAY', '牛战士', '13800138000', '小屯', 0, '2026-08-04 19:09:40', '2026-08-04 19:09:40');
-INSERT INTO `t_order` VALUES (11, '20260806185649de7fd2', 3, 8999.00, 'CANCELLED', '张三', '13800138000', '北京市朝阳区', 0, '2026-08-06 18:56:49', '2026-08-06 18:56:49');
-INSERT INTO `t_order` VALUES (12, '202608071720206c1a28', 3, 10998.00, 'PAID', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-07 17:20:20', '2026-08-07 17:20:20');
-INSERT INTO `t_order` VALUES (13, '20260808220632f31778', 3, 8999.00, 'WAIT_PAY', '张三', '13800138000', '北京市朝阳区', 0, '2026-08-08 22:06:32', '2026-08-08 22:06:32');
-INSERT INTO `t_order` VALUES (14, '202608091508343f5da2', 3, 8999.00, 'WAIT_PAY', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:08:35', '2026-08-09 15:08:35');
-INSERT INTO `t_order` VALUES (15, '2026080915083760898b', 3, 8999.00, 'PAID', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:08:37', '2026-08-09 15:08:37');
-INSERT INTO `t_order` VALUES (16, '20260809151348f759fc', 3, 8999.00, 'WAIT_PAY', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:13:48', '2026-08-09 15:13:48');
-INSERT INTO `t_order` VALUES (17, '20260809151350db3132', 3, 8999.00, 'WAIT_PAY', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:13:50', '2026-08-09 15:13:50');
-INSERT INTO `t_order` VALUES (18, '2026080915135246c29e', 3, 8999.00, 'CANCELLED', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:13:52', '2026-08-09 15:13:52');
-INSERT INTO `t_order` VALUES (19, '20260809151812ad48e5', 3, 8999.00, 'CANCELLED', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:18:12', '2026-08-09 15:18:12');
-INSERT INTO `t_order` VALUES (20, '2026080915402067d931', 3, 8999.00, 'WAIT_PAY', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:40:20', '2026-08-09 15:40:20');
+INSERT INTO `t_order` VALUES (1, '2026073113563149f68e', 1, 69990.00, 'PAID', '张三', '13800138000', '北京市朝阳区望京SOHO', 0, '2026-07-31 13:56:31', '2026-07-31 13:56:31', NULL);
+INSERT INTO `t_order` VALUES (2, '20260802150040e623c2', 1, 8999.00, 'WAIT_PAY', '张三', '13800138000', '北京市朝阳区', 0, '2026-08-02 15:00:40', '2026-08-02 15:00:40', NULL);
+INSERT INTO `t_order` VALUES (3, '2026080215331861b77e', 1, 8999.00, 'WAIT_PAY', '张三', '13800138000', '北京市朝阳区', 0, '2026-08-02 15:33:18', '2026-08-02 15:33:18', NULL);
+INSERT INTO `t_order` VALUES (4, '202608021615418d0ae8', 1, 8999.00, 'WAIT_PAY', 'A', '1', 'a', 0, '2026-08-02 16:15:41', '2026-08-02 16:15:41', NULL);
+INSERT INTO `t_order` VALUES (5, '20260802163208869d31', 1, 8999.00, 'WAIT_PAY', 'A', '1', 'a', 0, '2026-08-02 16:32:08', '2026-08-02 16:32:08', NULL);
+INSERT INTO `t_order` VALUES (6, '202608021637569bd5a3', 1, 8999.00, 'WAIT_PAY', '牛战士', '13800138000', '小屯', 0, '2026-08-02 16:37:56', '2026-08-02 16:37:56', NULL);
+INSERT INTO `t_order` VALUES (7, '20260802164428081430', 1, 8999.00, 'WAIT_PAY', 'A', '1', 'a', 0, '2026-08-02 16:44:28', '2026-08-02 16:44:28', NULL);
+INSERT INTO `t_order` VALUES (8, '20260802164429a71945', 1, 8999.00, 'WAIT_PAY', 'B', '2', 'b', 0, '2026-08-02 16:44:29', '2026-08-02 16:44:29', NULL);
+INSERT INTO `t_order` VALUES (9, '2026080221553451552c', 1, 1999.00, 'WAIT_PAY', '张三', '13800138000', '小屯', 0, '2026-08-02 21:55:34', '2026-08-02 21:55:34', NULL);
+INSERT INTO `t_order` VALUES (10, '202608041909409c300e', 1, 26997.00, 'WAIT_PAY', '牛战士', '13800138000', '小屯', 0, '2026-08-04 19:09:40', '2026-08-04 19:09:40', NULL);
+INSERT INTO `t_order` VALUES (11, '20260806185649de7fd2', 3, 8999.00, 'CANCELLED', '张三', '13800138000', '北京市朝阳区', 0, '2026-08-06 18:56:49', '2026-08-06 18:56:49', NULL);
+INSERT INTO `t_order` VALUES (12, '202608071720206c1a28', 3, 10998.00, 'PAID', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-07 17:20:20', '2026-08-07 17:20:20', NULL);
+INSERT INTO `t_order` VALUES (13, '20260808220632f31778', 3, 8999.00, 'WAIT_PAY', '张三', '13800138000', '北京市朝阳区', 0, '2026-08-08 22:06:32', '2026-08-08 22:06:32', NULL);
+INSERT INTO `t_order` VALUES (14, '202608091508343f5da2', 3, 8999.00, 'WAIT_PAY', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:08:35', '2026-08-09 15:08:35', NULL);
+INSERT INTO `t_order` VALUES (15, '2026080915083760898b', 3, 8999.00, 'PAID', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:08:37', '2026-08-09 15:08:37', NULL);
+INSERT INTO `t_order` VALUES (16, '20260809151348f759fc', 3, 8999.00, 'WAIT_PAY', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:13:48', '2026-08-09 15:13:48', NULL);
+INSERT INTO `t_order` VALUES (17, '20260809151350db3132', 3, 8999.00, 'WAIT_PAY', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:13:50', '2026-08-09 15:13:50', NULL);
+INSERT INTO `t_order` VALUES (18, '2026080915135246c29e', 3, 8999.00, 'CANCELLED', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:13:52', '2026-08-09 15:13:52', NULL);
+INSERT INTO `t_order` VALUES (19, '20260809151812ad48e5', 3, 8999.00, 'CANCELLED', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:18:12', '2026-08-09 15:18:12', NULL);
+INSERT INTO `t_order` VALUES (20, '2026080915402067d931', 3, 8999.00, 'WAIT_PAY', '牛', '17513702810', '河南省辉县市拍石头乡四里厂村78号', 0, '2026-08-09 15:40:20', '2026-08-09 15:40:20', NULL);
 
 -- ----------------------------
 -- Table structure for t_order_item

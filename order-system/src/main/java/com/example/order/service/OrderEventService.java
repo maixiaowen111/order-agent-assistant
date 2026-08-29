@@ -23,7 +23,7 @@ import java.util.Map;
  * 不负责"什么时候处理"——调度由 EventRetryScheduler 负责
  *
  * 设计要点：
- *   - 处理前检查状态，防止重复执行（幂等）
+ *   - 只负责业务副作用，不碰状态——状态流转统一由 EventRetryScheduler 条件更新
  *   - 处理失败抛异常，由外层（Scheduler）决定重试或标记 FAIL
  */
 @Slf4j
@@ -36,54 +36,32 @@ public class OrderEventService {
     private final ObjectMapper objectMapper;
 
     /**
-     * 处理单个事件记录
+     * 处理单个事件记录（只做业务副作用，状态流转统一交给调度器条件更新）。
      *
-     * @return true=处理成功，false=跳过（已处理或类型未知）
+     * 调度器先 claimForSend 抢占（WAIT→SENDING），处理成功由调度器 markSendSuccess 置 SUCCESS；
+     * 失败由调度器 handleRetry 条件更新（退避 WAIT 或死信 FAIL）。本方法不再碰状态——
+     * 否则"自己 setStatus + updateById"会绕过 claim_owner 条件，与调度器的条件更新互相覆盖，
+     * 多实例并发下会把别的实例正在处理的记录错误改掉。
      */
-    public boolean process(EventRecord record) {
-        // ① 幂等保护：非 WAIT 状态跳过
-        if (!"WAIT".equals(record.getStatus())) {
-            log.info("[事件] 跳过，id={}, status={}", record.getId(), record.getStatus());
-            return true;  // 已处理的视为成功，不再重试
-        }
+    public void process(EventRecord record) {
+        Map<String, Object> data = parseEventData(record.getEventData());
 
-        // ② 标记为处理中
-        record.setStatus("PROCESSING");
-        eventRecordMapper.updateById(record);
-
-        // ③ 根据类型执行
-        try {
-            Map<String, Object> data = parseEventData(record.getEventData());
-
-            switch (EventType.valueOf(record.getEventType())) {
-                case POINTS:
-                    handlePoints(data, record.getOrderNo());
-                    break;
-                case SMS:
-                    handleSms(data, record.getOrderNo());
-                    break;
-                case NOTIFY:
-                    handleNotify(data, record.getOrderNo());
-                    break;
-                case REFUND:
-                    handleRefund(data, record.getOrderNo());
-                    break;
-                default:
-                    log.warn("[事件] 未知类型，id={}, type={}", record.getId(), record.getEventType());
-                    break;
-            }
-
-            // ④ 标记成功
-            record.setStatus("SUCCESS");
-            eventRecordMapper.updateById(record);
-            log.info("[事件] 处理成功，id={}, type={}, orderNo={}",
-                    record.getId(), record.getEventType(), record.getOrderNo());
-            return true;
-
-        } catch (Exception e) {
-            log.error("[事件] 处理失败，id={}, type={}, orderNo={}, error={}",
-                    record.getId(), record.getEventType(), record.getOrderNo(), e.getMessage());
-            throw e;  // 抛给外层 Scheduler 处理重试逻辑
+        switch (EventType.valueOf(record.getEventType())) {
+            case POINTS:
+                handlePoints(data, record.getOrderNo());
+                break;
+            case SMS:
+                handleSms(data, record.getOrderNo());
+                break;
+            case NOTIFY:
+                handleNotify(data, record.getOrderNo());
+                break;
+            case REFUND:
+                handleRefund(data, record.getOrderNo());
+                break;
+            default:
+                log.warn("[事件] 未知类型，id={}, type={}", record.getId(), record.getEventType());
+                break;
         }
     }
 

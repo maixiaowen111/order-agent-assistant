@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -361,5 +362,105 @@ class OrderServiceImplTest {
         assertThat(vo.getReceiverName()).isEqualTo("张小明");
         assertThat(vo.getReceiverPhone()).isEqualTo("13800138000");
         assertThat(vo.getReceiverAddress()).isEqualTo("上海市浦东新区张江高科技园区");
+    }
+
+    // ---------- 幂等下单：clientRequestId 防网络重试重复下单 ----------
+
+    @Test
+    void 带幂等键重复下单_回放已有订单_不扣库存不删购物车() {
+        Order existing = order(1L, "WAIT_PAY");   // orderNo="NO1"
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        when(orderItemMapper.selectList(any())).thenReturn(List.of());
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setClientRequestId("req-123");
+
+            OrderVO vo = service.create(dto);
+
+            assertThat(vo.getOrderNo()).isEqualTo("NO1");   // 回放已有订单，不是新单号
+            // 关键：幂等命中绝不再碰库存、不删购物车、不再落库
+            verify(productMapper, never()).deductStock(any(), any());
+            verify(cartMapper, never()).deleteBatchIds(any());
+            verify(orderMapper, never()).insert(any(Order.class));
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 并发同键_第二个insert撞唯一键_回放赢家订单() {
+        Order winner = order(9L, "WAIT_PAY");   // 赢家已抢先落库，orderNo="NO9"
+        // 预检查没命中（赢家还没提交），insert 时撞唯一键 → catch 回查命中赢家
+        when(orderMapper.selectOne(any())).thenReturn(null, winner);
+        when(orderItemMapper.selectList(any())).thenReturn(List.of());
+        Cart cart = new Cart();
+        cart.setId(1L);
+        cart.setProductId(10L);
+        cart.setQuantity(2);
+        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));
+        Product p = product(10L, 100);
+        p.setName("iPhone 15 Ultra");
+        p.setPrice(new BigDecimal("5000.00"));
+        p.setStatus(1);
+        when(productMapper.selectById(10L)).thenReturn(p);
+        when(productMapper.deductStock(10L, 2)).thenReturn(1);
+        when(orderMapper.insert(any(Order.class)))
+                .thenThrow(new DuplicateKeyException("Duplicate entry 'req-123' for key 'uk_client_request_id'"));
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海");
+            dto.setClientRequestId("req-123");
+
+            OrderVO vo = service.create(dto);
+
+            assertThat(vo.getOrderNo()).isEqualTo("NO9");   // 回放赢家订单，不建新单
+            // 输家的 insert 确实尝试过一次（撞键），之后不再重复落库
+            verify(orderMapper).insert(any(Order.class));
+            // 撞键后整个事务回滚：购物车不删、订单明细不落库、事件不落库
+            verify(cartMapper, never()).deleteBatchIds(any());
+            verify(orderItemMapper, never()).insert(any(OrderItem.class));
+            verify(eventRecordMapper, never()).insert(any(EventRecord.class));
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void 不带幂等键_跳过预检查_正常下单() {
+        Cart cart = new Cart();
+        cart.setId(1L);
+        cart.setProductId(10L);
+        cart.setQuantity(2);
+        when(cartMapper.selectBatchIds(List.of(1L))).thenReturn(List.of(cart));
+        Product p = product(10L, 100);
+        p.setName("iPhone 15 Ultra");
+        p.setPrice(new BigDecimal("5000.00"));
+        p.setStatus(1);
+        when(productMapper.selectById(10L)).thenReturn(p);
+        when(productMapper.deductStock(10L, 2)).thenReturn(1);
+        UserContext.set(5L, "u", "USER");
+        try {
+            CreateOrderDTO dto = new CreateOrderDTO();
+            dto.setCartIds(List.of(1L));
+            dto.setReceiverName("张小明");
+            dto.setReceiverPhone("13800138000");
+            dto.setReceiverAddress("上海");
+
+            service.create(dto);
+
+            // 不带 key：不做幂等预检查（selectOne 一次都不该调）
+            verify(orderMapper, never()).selectOne(any());
+            ArgumentCaptor<Order> cap = ArgumentCaptor.forClass(Order.class);
+            verify(orderMapper).insert(cap.capture());
+            assertThat(cap.getValue().getClientRequestId()).isNull();
+        } finally {
+            UserContext.clear();
+        }
     }
 }

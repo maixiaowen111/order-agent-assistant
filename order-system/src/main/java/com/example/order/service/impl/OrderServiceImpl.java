@@ -23,6 +23,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
@@ -54,88 +55,124 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderVO create(CreateOrderDTO dto) {
-        // 1. 查出要购买的购物车记录
-        List<Cart> cartList = cartMapper.selectBatchIds(dto.getCartIds());
-        if (CollectionUtils.isEmpty(cartList)) {
-            throw new BusinessException(400, "购物车记录不存在");
+        Long userId = UserContext.getUserId();
+
+        // 0. 幂等键（可选）：同一 clientRequestId 只允许一个订单。
+        //    客户端网络重试/重复提交时直接回放已有订单，不再扣库存/重复下单。
+        //    并发竞态：两个同键请求同时越过预检查 → 各自扣库存 → 一个 insert 命中唯一键
+        //    uk_client_request_id，另一个撞键抛 DuplicateKeyException → 走下方 catch 回放赢家订单。
+        String clientRequestId = dto.getClientRequestId();
+        if (clientRequestId != null && !clientRequestId.isBlank()) {
+            Order existing = orderMapper.selectOne(new LambdaQueryWrapper<Order>()
+                    .eq(Order::getClientRequestId, clientRequestId));
+            if (existing != null) {
+                checkOwner(existing, userId);   // 幂等键也是资源：不能拿别人的键回放别人的订单
+                log.info("幂等命中（下单）：clientRequestId={} 已下单，回放订单 orderNo={}",
+                        clientRequestId, existing.getOrderNo());
+                return buildDetail(existing);
+            }
         }
 
-        // 2. 逐个校验商品 + 原子扣库存 + 计算总金额
-        BigDecimal totalAmount = BigDecimal.ZERO;
-        List<OrderItem> orderItems = new ArrayList<>();
-
-        for (Cart cart : cartList) {
-            // 读一次用于校验商品状态 + 构建订单快照（价格/名称）
-            Product product = productMapper.selectById(cart.getProductId());
-            if (Objects.isNull(product) || product.getStatus() != 1) {
-                throw new BusinessException(400,
-                        "商品【" + (product != null ? product.getName() : "未知") + "】已下架或不存在");
+        try {
+            // 1. 查出要购买的购物车记录
+            List<Cart> cartList = cartMapper.selectBatchIds(dto.getCartIds());
+            if (CollectionUtils.isEmpty(cartList)) {
+                throw new BusinessException(400, "购物车记录不存在");
             }
 
-            // 快速失败：明显不够的直接拦，不用等原子扣减
-            if (product.getStock() < cart.getQuantity()) {
-                throw new BusinessException(400,
-                        "商品【" + product.getName() + "】库存不足，剩余：" + product.getStock());
+            // 2. 逐个校验商品 + 原子扣库存 + 计算总金额
+            BigDecimal totalAmount = BigDecimal.ZERO;
+            List<OrderItem> orderItems = new ArrayList<>();
+
+            for (Cart cart : cartList) {
+                // 读一次用于校验商品状态 + 构建订单快照（价格/名称）
+                Product product = productMapper.selectById(cart.getProductId());
+                if (Objects.isNull(product) || product.getStatus() != 1) {
+                    throw new BusinessException(400,
+                            "商品【" + (product != null ? product.getName() : "未知") + "】已下架或不存在");
+                }
+
+                // 快速失败：明显不够的直接拦，不用等原子扣减
+                if (product.getStock() < cart.getQuantity()) {
+                    throw new BusinessException(400,
+                            "商品【" + product.getName() + "】库存不足，剩余：" + product.getStock());
+                }
+
+                // 原子扣减：UPDATE ... SET stock = stock - ? WHERE stock >= ?
+                // 两个并发请求同时买最后一件：只有一个人 affected=1，另一个 affected=0 被拦下。
+                // 不再"先查再写"——查到的 stock 在并发下可能是旧的，等写的时候已经不够了。
+                int affected = productMapper.deductStock(product.getId(), cart.getQuantity());
+                if (affected == 0) {
+                    throw new BusinessException(400,
+                            "商品【" + product.getName() + "】库存不足，请稍后重试");
+                }
+
+                // 计算小计（快照用下单时的价格）
+                BigDecimal itemTotal = product.getPrice()
+                        .multiply(BigDecimal.valueOf(cart.getQuantity()));
+                totalAmount = totalAmount.add(itemTotal);
+
+                // 构建订单详情（快照）
+                OrderItem item = new OrderItem();
+                item.setProductId(product.getId());
+                item.setProductName(product.getName());
+                item.setProductPrice(product.getPrice());
+                item.setQuantity(cart.getQuantity());
+                item.setTotalPrice(itemTotal);
+                orderItems.add(item);
             }
 
-            // 原子扣减：UPDATE ... SET stock = stock - ? WHERE stock >= ?
-            // 两个并发请求同时买最后一件：只有一个人 affected=1，另一个 affected=0 被拦下。
-            // 不再"先查再写"——查到的 stock 在并发下可能是旧的，等写的时候已经不够了。
-            int affected = productMapper.deductStock(product.getId(), cart.getQuantity());
-            if (affected == 0) {
-                throw new BusinessException(400,
-                        "商品【" + product.getName() + "】库存不足，请稍后重试");
+            // 3. 生成订单号
+            String orderNo = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
+                    + UUID.randomUUID().toString().substring(0, 6);
+
+            // 4. 保存订单
+            Order order = new Order();
+            order.setOrderNo(orderNo);
+            order.setUserId(userId);
+            order.setTotalAmount(totalAmount);
+            order.setStatus("WAIT_PAY");
+            order.setReceiverName(dto.getReceiverName());
+            order.setReceiverPhone(dto.getReceiverPhone());
+            order.setReceiverAddress(dto.getReceiverAddress());
+            order.setClientRequestId(clientRequestId);   // 可为 null（不带幂等键的旧客户端）
+            orderMapper.insert(order);
+
+            // 5. 保存订单详情
+            for (OrderItem item : orderItems) {
+                item.setOrderId(order.getId());
+                item.setOrderNo(orderNo);
+                orderItemMapper.insert(item);
             }
 
-            // 计算小计（快照用下单时的价格）
-            BigDecimal itemTotal = product.getPrice()
-                    .multiply(BigDecimal.valueOf(cart.getQuantity()));
-            totalAmount = totalAmount.add(itemTotal);
+            // 6. 删除已下单的购物车记录
+            cartMapper.deleteBatchIds(dto.getCartIds());
 
-            // 构建订单详情（快照）
-            OrderItem item = new OrderItem();
-            item.setProductId(product.getId());
-            item.setProductName(product.getName());
-            item.setProductPrice(product.getPrice());
-            item.setQuantity(cart.getQuantity());
-            item.setTotalPrice(itemTotal);
-            orderItems.add(item);
+            log.info("订单创建成功，orderNo={}, totalAmount={}", orderNo, totalAmount);
+
+            // 7. 构建 VO
+            OrderVO orderVO = buildOrderVO(order, orderItems);
+
+            // 8. 事务内插入事件记录（和订单同事务，保证不丢）
+            insertEventRecords(orderVO);
+
+            return orderVO;
+        } catch (DuplicateKeyException e) {
+            // 并发同键：两个请求同时越过预检查、各自扣了库存，其中一个 insert 撞 uk_client_request_id。
+            // 本请求（输家）在事务方法内 catch 该异常（不穿事务边界 → 不会 UnexpectedRollbackException），
+            // 整个事务回滚、自己那笔库存扣除一并撤销；回查回放赢家已落库的订单。
+            if (clientRequestId != null && !clientRequestId.isBlank()) {
+                Order existing = orderMapper.selectOne(new LambdaQueryWrapper<Order>()
+                        .eq(Order::getClientRequestId, clientRequestId));
+                if (existing != null) {
+                    checkOwner(existing, userId);
+                    log.info("并发撞唯一键，回放赢家订单 orderNo={}, clientRequestId={}",
+                            existing.getOrderNo(), clientRequestId);
+                    return buildDetail(existing);
+                }
+            }
+            throw e;
         }
-
-        // 3. 生成订单号
-        String orderNo = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
-                + UUID.randomUUID().toString().substring(0, 6);
-
-        // 4. 保存订单
-        Order order = new Order();
-        order.setOrderNo(orderNo);
-        order.setUserId(UserContext.getUserId());
-        order.setTotalAmount(totalAmount);
-        order.setStatus("WAIT_PAY");
-        order.setReceiverName(dto.getReceiverName());
-        order.setReceiverPhone(dto.getReceiverPhone());
-        order.setReceiverAddress(dto.getReceiverAddress());
-        orderMapper.insert(order);
-
-        // 5. 保存订单详情
-        for (OrderItem item : orderItems) {
-            item.setOrderId(order.getId());
-            item.setOrderNo(orderNo);
-            orderItemMapper.insert(item);
-        }
-
-        // 6. 删除已下单的购物车记录
-        cartMapper.deleteBatchIds(dto.getCartIds());
-
-        log.info("订单创建成功，orderNo={}, totalAmount={}", orderNo, totalAmount);
-
-        // 7. 构建 VO
-        OrderVO orderVO = buildOrderVO(order, orderItems);
-
-        // 8. 事务内插入事件记录（和订单同事务，保证不丢）
-        insertEventRecords(orderVO);
-
-        return orderVO;
     }
 
 

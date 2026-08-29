@@ -102,6 +102,10 @@ import com.example.order.exception.BusinessException;
           if (Objects.isNull(cart)) {
               throw new BusinessException(404, "购物车记录不存在");
           }
+          // 越权保护：cartId 是客户端传入的，直接改会改到别人的购物车——先校验归属
+          if (!cart.getUserId().equals(UserContext.getUserId())) {
+              throw new BusinessException(403, "无权访问该购物车记录");
+          }
           cart.setQuantity(quantity);
           cartMapper.updateById(cart);
       }
@@ -112,6 +116,10 @@ import com.example.order.exception.BusinessException;
           Cart cart = cartMapper.selectById(cartId);
           if (Objects.isNull(cart)) {
               throw new BusinessException(404, "购物车记录不存在");
+          }
+          // 越权保护：cartId 是客户端传入的，直接删会删掉别人的购物车——先校验归属
+          if (!cart.getUserId().equals(UserContext.getUserId())) {
+              throw new BusinessException(403, "无权访问该购物车记录");
           }
           cartMapper.deleteById(cartId);
       }
