@@ -11,14 +11,14 @@
 ┌───────────────────────────────────────────────────────────────────┐
 │  客户端：curl + 任意 MCP 客户端（Claude Desktop / Cursor）              │
 └───────────────────────────┬───────────────────────────────────────┘
-                            │ GET /query?q=..&sessionId=..   POST /approve
+                            │ POST /query（Bearer 登录）    POST /approve（本人会话）
                             ▼
 ┌───────────────────────────────────────────────────────────────────┐
 │  order-agent-assistant   (agent 决策层, 8081)                       │
 │                                                                    │
 │   AgentLoop  while 循环: 模型要工具→执行→结果喂回→直到模型给最终答案   │
 │     ├─ Tool 接口    name / description / inputSchema / run          │
-│     ├─ PermissionGate  只读放行；写操作要人工 /approve 才放行         │
+│     ├─ WritePermissionGate  写操作一次性批准（Redis 指纹，批即消费）         │
 │     ├─ RedisSessionStore  多轮记忆（TTL 30min，多实例共享）           │
 │     └─ OrderSystemApiClient  调内部接口，带 X-Internal-Key           │
 └───────────────────────────┬───────────────────────────────────────┘
@@ -43,7 +43,7 @@
 用户: "帮我取消订单 2026..."        → 模型决定调 cancel_order
 闸门: 写操作，未批准 → 拦截          → 模型转述"需要人工确认"
                                     前端聊天气泡出现「批准执行」按钮
-用户: POST /approve?sessionId=..    → 闸门放行 + 注入"已批准"消息
+用户: POST /approve（登录凭证+sessionId）→ 一次性放行该次写调用 + 注入"已批准"消息
 用户: "我已批准，继续"              → 模型再调 cancel_order → 执行
                                     → 订单 CANCELLED、库存恢复、
                                       REFUND 事件同事务落库 →
@@ -85,7 +85,8 @@ docker compose up -d --build
 # 3. 用起来
 # 前端页面（推荐）：http://localhost:8082 —— 完整电商 + AI 聊天面板
 # 或直接调 agent 接口：
-curl "http://localhost:8081/query?q=帮我查询订单&sessionId=demo"
+curl -X POST "http://localhost:8081/query" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"q":"帮我查询订单","sessionId":"demo"}'
 ```
 
 > 前置：宿主机需要 `DEEPSEEK_API_KEY`（.env 注入，不写死在镜像里）；`mysql`/`redis` 容器**不占用宿主机端口**，避免和你本机已有的 3306/6379 冲突。
@@ -126,11 +127,15 @@ curl -X POST localhost:8080/api/order -H "Authorization: Bearer $TOKEN" \
   -d '{"cartIds":[<cartId>],"receiverName":"zhangsan","receiverPhone":"13800138000","receiverAddress":"beijing"}'
 curl -X PUT localhost:8080/api/order/<orderId>/pay -H "Authorization: Bearer $TOKEN"
 
-# ③ 让 agent 查询 / 取消（取消会被闸门拦住）
-curl -G "localhost:8081/query" --data-urlencode "q=帮我查一下订单 <orderNo>" --data-urlencode "sessionId=demo"
-curl -G "localhost:8081/query" --data-urlencode "q=帮我取消订单 <orderNo>" --data-urlencode "sessionId=demo"
-curl -X POST "localhost:8081/approve?sessionId=demo"
-curl -G "localhost:8081/query" --data-urlencode "q=我已批准，请继续取消 <orderNo>" --data-urlencode "sessionId=demo"
+# ③ 让 agent 查询 / 取消（取消会被闸门拦住；/query、/approve 都要登录凭证）
+curl -X POST "localhost:8081/query" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"q":"帮我查一下订单 <orderNo>","sessionId":"demo"}'
+curl -X POST "localhost:8081/query" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"q":"帮我取消订单 <orderNo>","sessionId":"demo"}'
+curl -X POST "localhost:8081/approve" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"sessionId":"demo"}'
+curl -X POST "localhost:8081/query" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"q":"我已批准，请继续取消 <orderNo>","sessionId":"demo"}'
 
 # ④ 通知中心看到真实退款通知
 curl "localhost:8080/api/notification/my" -H "Authorization: Bearer $TOKEN"
@@ -216,7 +221,7 @@ Vite 代理已配好：`/api`→8080、`/query`+`/approve`→8081，同样无跨
 ## 测试
 
 ```bash
-cd order-agent-assistant && mvn test    # 56 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / 异常 / 脱敏 / MCP 握手
+cd order-agent-assistant && mvn test    # 114 个用例：AgentLoop / 闸门 / 会话存储 / 工具参数解析 / 异常 / 脱敏 / MCP 握手
 cd order-system && mvn test             # 36 个用例：取消状态机 / 通知中心 / 脱敏 / 商品图片
 ```
 
@@ -229,13 +234,13 @@ order-agent-assistant/     # 决策层（本仓库）
   src/main/java/com/orderagent/
     AgentLoop.java         核心循环（模型=决策点，harness=执行）
     Tool / ToolCall        工具抽象（MCP 模型）
-    PermissionGate         权限闸门（只读放行/写操作要批准）
+    PermissionGate / ToolProposalGate  权限闸门（只读放行/写操作要批准）
     McpController          MCP 兼容层（POST /mcp：initialize / tools/list / tools/call）
     RedisSessionStore      多轮记忆（TTL + 裁剪 + 损坏兜底）
     PersistedMessage       消息序列化中间格式（解决 Jackson 多态）
     DeepSeekLlmClient      LLM 通道（OpenAI 兼容 API）
     AgentController        REST 入口（/query、/approve）
-  src/test/java/           单元测试（56 个用例，含 McpHandshakeTest 严格客户端握手模拟）
+  src/test/java/           单元测试（114 个用例，含 McpHandshakeTest 严格客户端握手模拟）
   Dockerfile / docker-compose.yml / .env.example
 
 order-system/              # 执行层（同级目录）

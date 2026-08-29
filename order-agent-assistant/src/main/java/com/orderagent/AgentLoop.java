@@ -44,7 +44,7 @@ public class AgentLoop {
         this.maxSteps = maxSteps;
     }
 
-    public String chat(String sessionId, String userInput) {
+    public String chat(String sessionId, Long userId, String userInput) {
         // 从存储取这个会话的历史（没有就新建，自带系统提示词），再追加本轮提问
         List<Message> messages = store.getOrCreate(sessionId);
         messages.add(Message.user(userInput));
@@ -87,7 +87,7 @@ public class AgentLoop {
                             toolStep, ctx.sessionId(), call.name());
                     continue;
                 }
-                String result = executeTool(call, sessionId);
+                String result = executeTool(call, sessionId, userId);
                 messages.add(Message.tool(call.id(), result));
                 log.info("工具执行 step={} sessionId={} elapsedMs={} tool={} args={} result={}",
                         toolStep, ctx.sessionId(), ctx.elapsedMs(), call.name(),
@@ -126,8 +126,8 @@ public class AgentLoop {
         store.save(sessionId, messages);
     }
 
-    private String executeTool(ToolCall call, String sessionId) {
-        if (gate.blocks(call, sessionId)) {
+    private String executeTool(ToolCall call, String sessionId, Long userId) {
+        if (gate.blocks(call, sessionId, userId)) {
             return gate.reason(call);
         }
         Tool tool = tools.get(call.name());
@@ -135,7 +135,10 @@ public class AgentLoop {
             return "未知工具：" + call.name();
         }
         try {
-            return tool.run(call.args());
+            String result = tool.run(call.args());
+            // 写工具批准是一次性的：执行成功后通知闸门消费，防止一次批准被反复复用
+            gate.afterToolExecuted(call, sessionId, userId, result);
+            return result;
         } catch (Exception e) {
             // 兜底：任何工具异常都不该炸穿整个循环——真异常记给开发看，给模型的是一句干净的话
             // （注意：不打印 args，收货地址属敏感信息）

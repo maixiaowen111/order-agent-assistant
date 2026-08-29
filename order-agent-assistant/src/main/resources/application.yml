@@ -10,7 +10,11 @@ spring:
 deepseek:
   # key 不写死，运行时从环境变量 DEEPSEEK_API_KEY 读（配置外部化）
   api-key: ${DEEPSEEK_API_KEY}
+  # 手写 DeepSeekLlmClient 用：完整接口地址（拼好 body 直接 POST 到这里）
   base-url: https://api.deepseek.com/chat/completions
+  # LangChain4j 用：只要根地址，框架会自动拼 /chat/completions
+  # 坑：两边写法不同，别把上面那个完整地址直接传给 LangChain4j
+  l4j-base-url: https://api.deepseek.com
   model: deepseek-chat
 
 # 订单系统内部接口：agent 不直连数据库，所有数据读写走这里
@@ -23,3 +27,12 @@ order-system:
 agent:
   # 每次模型调用、每次工具执行都算一步，超过立即停止，防止模型"停不下来"拖进无限循环
   max-steps: 8
+  # 校验 order-system 签发 JWT 的密钥。/query、/approve 用它把登录用户钉在请求上。
+  # 生产必须设环境变量 JWT_SECRET 且与 order-system 的 JwtUtil 保持一致；下面回退值仅供本地开发。
+  jwt-secret: ${JWT_SECRET:MyOrderSystemSecretKeyForJwtToken2024!!!}
+  # 一次"人工批准"的有效期：过期作废，必须重新批准（防止批准长期挂账被复用）
+  approval-ttl-minutes: 5
+  cors:
+    # 允许跨域的来源（MCP Inspector 是浏览器应用会跨域；Claude Desktop/Cursor 是 Electron 不强制）。
+    # 生产按需收紧，别用 * 全放。默认放本机前端 5173 + MCP Inspector 6274。
+    allowed-origins: ${AGENT_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:6274}

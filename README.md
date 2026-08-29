@@ -98,8 +98,8 @@ docker compose up -d --build
 ## 测试
 
 ```bash
-cd order-system && mvn test          # 36 个用例：状态机/通知中心/脱敏/商品图片
-cd order-agent-assistant && mvn test  # 56 个用例：AgentLoop/闸门/会话存储/工具/异常/脱敏/MCP 握手
+cd order-system && mvn test          # 45 个用例：状态机/通知中心/脱敏/商品图片/订单归属校验
+cd order-agent-assistant && mvn test  # 114 个用例：AgentLoop/闸门/会话存储/工具/异常/脱敏/MCP 握手
 ```
 
 纯 Mockito 单元测试，不依赖中间件，任何机器都能跑绿。
@@ -110,7 +110,7 @@ cd order-agent-assistant && mvn test  # 56 个用例：AgentLoop/闸门/会话�
 
 ```
 order-agent-assistant/   # AI 决策层 + 前端 + 部署编排
-  src/main/java/com/orderagent/   AgentLoop / Tool / PermissionGate / RedisSessionStore
+  src/main/java/com/orderagent/   AgentLoop / Tool / WritePermissionGate / RedisSessionStore
   frontend/                       Vue3 电商 + AI 聊天面板
   Dockerfile / docker-compose.yml / .env.example
 order-system/            # 业务执行层

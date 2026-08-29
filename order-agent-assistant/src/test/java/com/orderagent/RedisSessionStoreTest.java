@@ -90,6 +90,32 @@ class RedisSessionStoreTest {
     }
 
     @Test
+    void bindOwner写归属并带30分钟TTL() {
+        store.bindOwner("s1", 1L);
+
+        ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> value = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Duration> ttl = ArgumentCaptor.forClass(Duration.class);
+        verify(ops).set(key.capture(), value.capture(), ttl.capture());
+
+        assertThat(key.getValue()).isEqualTo("agent:owner:s1");   // 归属和会话分开存，防混
+        assertThat(value.getValue()).isEqualTo("1");
+        assertThat(ttl.getValue()).isEqualTo(Duration.ofMinutes(30));
+    }
+
+    @Test
+    void ownerOf读回归属用户() {
+        when(ops.get("agent:owner:s1")).thenReturn("1");
+        assertThat(store.ownerOf("s1")).isEqualTo(1L);
+    }
+
+    @Test
+    void ownerOf无归属返回null() {
+        when(ops.get("agent:owner:s1")).thenReturn(null);
+        assertThat(store.ownerOf("s1")).isNull();
+    }
+
+    @Test
     void 超限裁剪_保留系统提示词和最近的消息() throws Exception {
         List<Message> many = new java.util.ArrayList<>();
         many.add(Message.system("提示"));

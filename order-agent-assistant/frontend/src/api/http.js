@@ -52,6 +52,14 @@ export const agentHttp = axios.create({
   timeout: 150000,
 })
 
+// agent 接口（/query /approve）同样要带登录态：agent 后端用同一个 JWT 校验"是哪个用户在操作"，
+// 否则 sessionId 无主，任何人都能冒用别人的会话和批准。
+agentHttp.interceptors.request.use((config) => {
+  const auth = useAuthStore()
+  if (auth.token) config.headers.Authorization = `Bearer ${auth.token}`
+  return config
+})
+
 // 关键 bug 修复：agent 之前缺这行解包拦截器。
 // 业务实例有解包（return body.data），agent 没有 → chat store 拿到的是
 // axios 响应对象 {data,status,...}，res.answer / res.sessionId 全是 undefined，

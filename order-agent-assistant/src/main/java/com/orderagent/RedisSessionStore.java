@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 public class RedisSessionStore implements SessionStore {
 
     private static final String PREFIX = "agent:session:";
+    private static final String OWNER_PREFIX = "agent:owner:";
     private static final Duration TTL = Duration.ofMinutes(30);
     /** 单个会话最多保留的消息条数：第 1 条是系统提示词（必须留），其余留最近的 */
     private static final int MAX_MESSAGES = 50;
@@ -76,6 +77,17 @@ public class RedisSessionStore implements SessionStore {
         } catch (Exception e) {
             throw new RuntimeException("会话写入失败：" + e.getMessage(), e);
         }
+    }
+
+    @Override
+    public void bindOwner(String sessionId, Long userId) {
+        redis.opsForValue().set(OWNER_PREFIX + sessionId, String.valueOf(userId), TTL);
+    }
+
+    @Override
+    public Long ownerOf(String sessionId) {
+        String raw = redis.opsForValue().get(OWNER_PREFIX + sessionId);
+        return raw == null ? null : Long.valueOf(raw);
     }
 
     private List<Message> trim(List<Message> messages) {

@@ -40,6 +40,7 @@ class AgentLoopTest {
     /** 内存版存储：测试用，顺便验证 AgentLoop 真的存取了会话。 */
     private static class InMemoryStore implements SessionStore {
         final Map<String, List<Message>> data = new ConcurrentHashMap<>();
+        final Map<String, Long> owners = new ConcurrentHashMap<>();
 
         public List<Message> getOrCreate(String sessionId) {
             return data.computeIfAbsent(sessionId,
@@ -48,6 +49,14 @@ class AgentLoopTest {
 
         public void save(String sessionId, List<Message> messages) {
             data.put(sessionId, new ArrayList<>(messages));
+        }
+
+        public void bindOwner(String sessionId, Long userId) {
+            owners.put(sessionId, userId);
+        }
+
+        public Long ownerOf(String sessionId) {
+            return owners.get(sessionId);
         }
     }
 
@@ -67,7 +76,7 @@ class AgentLoopTest {
     }
 
     private static class AlwaysAllowGate implements PermissionGate {
-        public boolean blocks(ToolCall call, String sessionId) { return false; }
+        public boolean blocks(ToolCall call, String sessionId, Long userId) { return false; }
     }
 
     @Test
@@ -75,7 +84,7 @@ class AgentLoopTest {
         ScriptedLlm llm = new ScriptedLlm(List.of(new LlmResponse("查单结果：PAID", List.of())));
         AgentLoop loop = new AgentLoop(llm, List.of(QUERY), new AlwaysAllowGate(), new InMemoryStore());
 
-        String answer = loop.chat("s1", "查一下订单");
+        String answer = loop.chat("s1", 1L, "查一下订单");
 
         assertThat(answer).isEqualTo("查单结果：PAID");
         assertThat(llm.received).hasSize(1);
@@ -92,7 +101,7 @@ class AgentLoopTest {
         InMemoryStore store = new InMemoryStore();
         AgentLoop loop = new AgentLoop(llm, List.of(QUERY), new AlwaysAllowGate(), store);
 
-        String answer = loop.chat("s1", "查一下订单 A123");
+        String answer = loop.chat("s1", 1L, "查一下订单 A123");
 
         assertThat(answer).isEqualTo("订单状态：PAID");
         // 第二轮发给模型的消息里，带上了工具结果：role=tool、号牌对应、内容是工具返回值
@@ -112,13 +121,13 @@ class AgentLoopTest {
                 new LlmResponse("需要您确认后取消", List.of())
         ));
         PermissionGate blockingGate = new PermissionGate() {
-            public boolean blocks(ToolCall c, String s) { return true; }
+            public boolean blocks(ToolCall c, String s, Long u) { return true; }
             public String reason(ToolCall c) { return "写操作被拦截：取消订单 A123 需要人工确认。"; }
         };
         InMemoryStore store = new InMemoryStore();
         AgentLoop loop = new AgentLoop(llm, List.of(CANCEL), blockingGate, store);
 
-        String answer = loop.chat("s1", "取消订单 A123");
+        String answer = loop.chat("s1", 1L, "取消订单 A123");
 
         assertThat(answer).isEqualTo("需要您确认后取消");
         List<Message> round2 = llm.received.get(1);
@@ -143,7 +152,7 @@ class AgentLoopTest {
         ));
         AgentLoop loop = new AgentLoop(llm, List.of(crashTool), new AlwaysAllowGate(), new InMemoryStore());
 
-        String answer = loop.chat("s1", "查一下订单 A123");
+        String answer = loop.chat("s1", 1L, "查一下订单 A123");
 
         // 循环没炸，模型收到的是干净的结构化错误（不含堆栈），并能正常收尾
         assertThat(answer).isEqualTo("查询失败，请稍后重试");
@@ -187,7 +196,7 @@ class AgentLoopTest {
 
         AgentLoop loop = new AgentLoop(llm, List.of(countingQuery), new AlwaysAllowGate(), new InMemoryStore(), 8);
 
-        String answer = loop.chat("s1", "查一下订单");
+        String answer = loop.chat("s1", 1L, "查一下订单");
 
         // 没有死循环，返回了用户能看懂的停止提示
         assertThat(answer).contains("自动停止");
@@ -220,7 +229,7 @@ class AgentLoopTest {
         InMemoryStore store = new InMemoryStore();
         AgentLoop loop = new AgentLoop(llm, List.of(countingQuery), new AlwaysAllowGate(), store, 3);
 
-        String answer = loop.chat("s1", "帮我查三个订单");
+        String answer = loop.chat("s1", 1L, "帮我查三个订单");
 
         // 只有前两个工具真执行了，第 3 个预算耗尽被跳过
         assertThat(toolRuns.get()).isEqualTo(2);

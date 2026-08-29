@@ -82,8 +82,9 @@ public class McpController {
                 "capabilities", Map.of("tools", Map.of("listChanged", false)),
                 "serverInfo", Map.of("name", "order-agent", "version", "0.0.1"),
                 // 规范允许的 instructions：Claude Desktop 会展示给用户，先把「写要批准」的预期说清楚
-                "instructions", "该 agent 的写操作需要人工批准：模型触发写工具时会被拦下（isError:true），"
-                        + "请在本机浏览器里 POST /approve?sessionId=.. 批准后，再让模型重试。");
+                "instructions", "该 agent 的写操作需要人工批准：模型触发写工具时会被拦下（isError:true）。"
+                        + "批准必须带登录凭证：POST /approve（Authorization: Bearer <token>，body 里带 sessionId），"
+                        + "批准后让模型重试。只读查询无需批准，但 /query 同样要求登录凭证（Bearer）。");
     }
 
     /** tools/list：把 Tool 接口的 name/description/inputSchema 原样暴露成 MCP 工具。 */

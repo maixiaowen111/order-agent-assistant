@@ -160,8 +160,14 @@ public class OrderSystemApiClient {
         String url = baseUrl + path + "?" + query;
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(10))
-                .header("X-Internal-Key", internalKey)
+                .header("X-Internal-Key", internalKey)   // 服务间鉴权：证明"这是 agent 在调用"，不是用户身份
                 .header("Accept", "application/json");
+        // 用户身份：X-Internal-Key 只能证明服务身份，不能证明"是哪个用户在操作订单"。
+        // 当前请求的登录用户从这里透传，order-system 内部接口据此校验订单归属。
+        Long uid = AgentUserContext.get();
+        if (uid != null) {
+            builder.header("X-User-Id", String.valueOf(uid));
+        }
         HttpRequest req = ("GET".equals(method))
                 ? builder.GET().build()
                 : builder.POST(HttpRequest.BodyPublishers.noBody()).build();

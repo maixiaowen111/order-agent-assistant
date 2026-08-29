@@ -54,7 +54,11 @@ services:
       # 连接地址从 localhost 换成 compose 服务名（覆盖 application-dev.yml）
       SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/order_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
       SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: "123456"
+      # 密码/内部密钥/JWT密钥都从宿主机 .env 注入（application-dev.yml 读同名变量，
+      # 没配就用默认值——本地开发开箱即用，生产必须显式设置，别用默认）
+      DB_PASSWORD: "${DB_PASSWORD:-123456}"
+      INTERNAL_API_KEY: "${INTERNAL_API_KEY:-order-agent-internal-key-2026}"
+      JWT_SECRET: "${JWT_SECRET:-MyOrderSystemSecretKeyForJwtToken2024!!!}"
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
       # Redisson 锁用的地址也要指向 compose 服务名（spring.data.redis 只覆盖 Spring Data Redis）
@@ -80,8 +84,8 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
       ORDER_SYSTEM_BASE_URL: http://order-system:8080
-      # 和 order-system 的 internal-api.key 保持一致
-      ORDER_SYSTEM_INTERNAL_KEY: order-agent-internal-key-2026
+      # 和 order-system 的 internal-api.key 保持一致（同一个 .env 变量注入，天然不跑偏）
+      ORDER_SYSTEM_INTERNAL_KEY: "${INTERNAL_API_KEY:-order-agent-internal-key-2026}"
     ports:
       - "8081:8081"
 
