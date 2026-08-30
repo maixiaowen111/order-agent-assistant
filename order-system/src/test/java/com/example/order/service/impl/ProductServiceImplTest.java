@@ -2,6 +2,7 @@ package com.example.order.service.impl;
 
 import com.example.order.dto.ProductDTO;
 import com.example.order.entity.Product;
+import com.example.order.exception.BusinessException;
 import com.example.order.mapper.ProductMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,7 +17,9 @@ import java.nio.file.Path;
 import java.util.Comparator;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -29,6 +32,7 @@ import static org.mockito.Mockito.when;
 class ProductServiceImplTest {
 
     private ProductMapper productMapper;
+    private RedisTemplate<String, Object> redisTemplate;
     private ProductServiceImpl service;
     private Path uploadDir;
 
@@ -36,7 +40,8 @@ class ProductServiceImplTest {
     void setUp() throws IOException {
         productMapper = mock(ProductMapper.class);
         @SuppressWarnings("unchecked")
-        RedisTemplate<String, Object> redisTemplate = mock(RedisTemplate.class);
+        RedisTemplate<String, Object> rt = mock(RedisTemplate.class);
+        redisTemplate = rt;
         service = new ProductServiceImpl(productMapper, redisTemplate);
         uploadDir = Files.createTempDirectory("img-test");
         ReflectionTestUtils.setField(service, "uploadDir", uploadDir.toString());
@@ -60,6 +65,8 @@ class ProductServiceImplTest {
         p.setId(id);
         p.setName("测试商品");
         p.setPrice(new BigDecimal("99.00"));
+        p.setStock(10);
+        p.setStatus(1);
         p.setImage(image);
         p.setDeleted(0);
         return p;
@@ -69,6 +76,7 @@ class ProductServiceImplTest {
         ProductDTO d = new ProductDTO();
         d.setName("测试商品");
         d.setPrice(new BigDecimal("99.00"));
+        d.setStock(10);
         d.setImage(image);
         return d;
     }
@@ -152,5 +160,125 @@ class ProductServiceImplTest {
 
         assertThat(Files.exists(uploaded)).isTrue();
         verify(productMapper, never()).selectCount(any());
+    }
+
+    // ---------- 商品参数校验（Service 层兜底，非法值 400 且绝不落库） ----------
+
+    @Test
+    void 新增_价格为0_400_不落库() {
+        ProductDTO d = dto("/uploads/x.jpg");
+        d.setPrice(new BigDecimal("0.00"));
+
+        Throwable t = catchThrowable(() -> service.create(d));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("大于 0");
+        verify(productMapper, never()).insert(any());
+    }
+
+    @Test
+    void 新增_价格为负数_400_不落库() {
+        ProductDTO d = dto("/uploads/x.jpg");
+        d.setPrice(new BigDecimal("-1.00"));
+
+        Throwable t = catchThrowable(() -> service.create(d));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        verify(productMapper, never()).insert(any());
+    }
+
+    @Test
+    void 新增_库存为负数_400_不落库() {
+        ProductDTO d = dto("/uploads/x.jpg");
+        d.setStock(-5);
+
+        Throwable t = catchThrowable(() -> service.create(d));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("库存");
+        verify(productMapper, never()).insert(any());
+        verify(redisTemplate, never()).delete(anyString());
+    }
+
+    @Test
+    void 修改_价格为负数_400_不落库不删缓存() {
+        when(productMapper.selectById(1L)).thenReturn(product(1L, "/uploads/abc.jpg"));
+
+        ProductDTO d = dto("/uploads/abc.jpg");
+        d.setPrice(new BigDecimal("-1.00"));
+        Throwable t = catchThrowable(() -> service.update(1L, d));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        verify(productMapper, never()).updateById(any());
+        verify(redisTemplate, never()).delete(anyString());
+    }
+
+    @Test
+    void 修改_库存为负数_400_不落库() {
+        when(productMapper.selectById(1L)).thenReturn(product(1L, "/uploads/abc.jpg"));
+
+        ProductDTO d = dto("/uploads/abc.jpg");
+        d.setStock(-1);
+        Throwable t = catchThrowable(() -> service.update(1L, d));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        verify(productMapper, never()).updateById(any());
+    }
+
+    // ---------- 状态只能 0 / 1 ----------
+
+    @Test
+    void 改状态_status为2_400_不改库() {
+        when(productMapper.selectById(1L)).thenReturn(product(1L, null));
+
+        Throwable t = catchThrowable(() -> service.updateStatus(1L, 2));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("0 或 1");
+        verify(productMapper, never()).updateById(any());
+    }
+
+    @Test
+    void 改状态_status为负数_400_不改库() {
+        when(productMapper.selectById(1L)).thenReturn(product(1L, null));
+
+        Throwable t = catchThrowable(() -> service.updateStatus(1L, -1));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        verify(productMapper, never()).updateById(any());
+    }
+
+    @Test
+    void 改状态_status合法_更新并删缓存() {
+        when(productMapper.selectById(1L)).thenReturn(product(1L, null));
+
+        service.updateStatus(1L, 0);
+
+        verify(productMapper).updateById(any());
+        verify(redisTemplate).delete("product:detail:1");
+    }
+
+    // ---------- 缓存一致性：成功删缓存，落库失败绝不删 ----------
+
+    @Test
+    void 修改_成功_必须删缓存() {
+        when(productMapper.selectById(1L)).thenReturn(product(1L, "/uploads/abc.jpg"));
+        when(productMapper.selectCount(any())).thenReturn(0L);
+
+        service.update(1L, dto("/uploads/def.png"));
+
+        verify(redisTemplate).delete("product:detail:1");
+    }
+
+    @Test
+    void 修改_落库失败_不删缓存() {
+        when(productMapper.selectById(1L)).thenReturn(product(1L, "/uploads/abc.jpg"));
+        when(productMapper.selectCount(any())).thenReturn(0L);
+        when(productMapper.updateById(any())).thenThrow(new RuntimeException("db down"));
+
+        Throwable t = catchThrowable(() -> service.update(1L, dto("/uploads/def.png")));
+
+        assertThat(t).isInstanceOf(RuntimeException.class);
+        verify(redisTemplate, never()).delete(anyString());
     }
 }

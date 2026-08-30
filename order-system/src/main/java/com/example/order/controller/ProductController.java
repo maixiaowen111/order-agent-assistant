@@ -107,6 +107,9 @@ import com.example.order.exception.BusinessException;
       public Result<Void> updateStatus(@PathVariable Long id,
                                         @RequestParam Integer status) {
           checkAdmin();
+          if (status == null || (status != 0 && status != 1)) {
+              throw new BusinessException(400, "商品状态只能为 0 或 1");
+          }
           productService.updateStatus(id, status);
           return Result.success();
       }

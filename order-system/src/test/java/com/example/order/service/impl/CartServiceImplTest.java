@@ -13,6 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -197,5 +198,44 @@ class CartServiceImplTest {
         service.add(dtoOf(10L, 2));
 
         verify(cartMapper).insert(any(Cart.class));
+    }
+
+    // ---------- 合并数量上限：已有 + 本次 不能超 999，超了 400 且不写库 ----------
+
+    @Test
+    void 加购_已有900再买200_400_不写库() {
+        com.example.order.entity.Product p = new com.example.order.entity.Product();
+        p.setId(10L);
+        p.setStatus(1);
+        when(productMapper.selectById(10L)).thenReturn(p);
+        Cart exist = cartOf(1L, 1L);
+        exist.setQuantity(900);
+        when(cartMapper.selectOne(any())).thenReturn(exist);
+        UserContext.set(1L, "u", "USER");
+
+        Throwable t = catchThrowable(() -> service.add(dtoOf(10L, 200)));
+
+        assertThat(((BusinessException) t).getCode()).isEqualTo(400);
+        assertThat(((BusinessException) t).getMessage()).contains("999");
+        // 合并超限直接拦下，不写库 → 购物车仍保持 900
+        verify(cartMapper, never()).updateById(any(Cart.class));
+        verify(cartMapper, never()).insert(any(Cart.class));
+    }
+
+    @Test
+    void 加购_合并后恰为999_允许更新() {
+        com.example.order.entity.Product p = new com.example.order.entity.Product();
+        p.setId(10L);
+        p.setStatus(1);
+        when(productMapper.selectById(10L)).thenReturn(p);
+        Cart exist = cartOf(1L, 1L);
+        exist.setQuantity(800);
+        when(cartMapper.selectOne(any())).thenReturn(exist);
+        UserContext.set(1L, "u", "USER");
+
+        service.add(dtoOf(10L, 199));
+
+        verify(cartMapper).updateById(argThat(c -> c.getQuantity() == 999));
+        verify(cartMapper, never()).insert(any(Cart.class));
     }
 }

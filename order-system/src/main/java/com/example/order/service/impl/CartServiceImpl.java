@@ -53,8 +53,12 @@ import com.example.order.exception.BusinessException;
           Cart existCart = cartMapper.selectOne(wrapper);
 
           if (Objects.nonNull(existCart)) {
-              // 已有，累加数量
-              existCart.setQuantity(existCart.getQuantity() + dto.getQuantity());
+              // 已有，累加数量——但合并后的总数量也要 ≤999，超了直接 400，绝不写库
+              int merged = existCart.getQuantity() + dto.getQuantity();
+              if (merged > 999) {
+                  throw new BusinessException(400, "购物车商品总数量不能超过 999");
+              }
+              existCart.setQuantity(merged);
               cartMapper.updateById(existCart);
           } else {
               // 没有，新增

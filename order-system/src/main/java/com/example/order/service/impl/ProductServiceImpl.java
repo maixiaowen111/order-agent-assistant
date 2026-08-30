@@ -17,6 +17,7 @@
  import org.springframework.util.StringUtils;
 
  import java.io.IOException;
+ import java.math.BigDecimal;
  import java.nio.file.Files;
  import java.nio.file.Path;
  import java.nio.file.Paths;
@@ -142,6 +143,7 @@
       @Override
       @Transactional(rollbackFor = Exception.class)
       public ProductVO create(ProductDTO dto) {
+          validateProductDTO(dto);
           Product product = new Product();
           product.setName(dto.getName());
           product.setDescription(dto.getDescription());
@@ -162,6 +164,7 @@
       @Override
       @Transactional(rollbackFor = Exception.class)
       public ProductVO update(Long id, ProductDTO dto) {
+          validateProductDTO(dto);
           Product product = getById(id);
           String oldImage = product.getImage();
           product.setName(dto.getName());
@@ -183,12 +186,43 @@
       @Override
       @Transactional(rollbackFor = Exception.class)
       public void updateStatus(Long id, Integer status) {
+          validateStatus(status);
           Product product = getById(id);
           product.setStatus(status);
           productMapper.updateById(product);
           redisTemplate.delete(PRODUCT_CACHE_PREFIX + id);
 
           log.info("商品状态变更，id={}, status={}", id, status);
+      }
+
+      // ============ 参数校验（Service 层兜底，不能只依赖 Controller 的 Bean Validation） ============
+
+      /**
+       * 商品新增/修改共用的参数规则：价格必须 > 0，库存必须 >= 0。
+       * 在写库之前拦死，非法参数绝不落库。
+       */
+      private void validateProductDTO(ProductDTO dto) {
+          if (dto.getPrice() == null) {
+              throw new BusinessException(400, "商品价格不能为空");
+          }
+          if (dto.getPrice().compareTo(BigDecimal.ZERO) <= 0) {
+              throw new BusinessException(400, "商品价格必须大于 0");
+          }
+          if (dto.getStock() == null) {
+              throw new BusinessException(400, "库存数量不能为空");
+          }
+          if (dto.getStock() < 0) {
+              throw new BusinessException(400, "库存不能为负数");
+          }
+      }
+
+      /**
+       * 商品状态只允许 0（下架）/ 1（上架），其他值一律 400，不落库。
+       */
+      private void validateStatus(Integer status) {
+          if (status == null || (status != 0 && status != 1)) {
+              throw new BusinessException(400, "商品状态只能为 0 或 1");
+          }
       }
 
       @Override
