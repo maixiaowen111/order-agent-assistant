@@ -12,6 +12,8 @@
 order-system/uploads/
 # Claude Code 本地配置/计划（不进 git）
 .claude/
+# 简历草稿（个人文件，非项目代码）
+/resume-staging/
 
 # Java / Maven
 target/
